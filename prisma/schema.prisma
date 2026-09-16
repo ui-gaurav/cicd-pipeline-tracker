@@ -3,6 +3,60 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  ADMIN
+  VIEWER
+}
+
+enum Environment {
+  STAGING
+  PRODUCTION
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  role      Role     @default(VIEWER)
+  createdAt DateTime @default(now())
+}
+
+model Repository {
+  id          String       @id @default(uuid())
+  name        String
+  owner       String
+  deployments Deployment[]
+  stats       RepoStats?
+  createdAt   DateTime     @default(now())
+
+  @@unique([owner, name])
+}
+
+model Deployment {
+  id           String      @id @default(uuid())
+  commitSha    String
+  commitAuthor String
+  branch       String
+  environment  Environment @default(STAGING)
+  status       String
+  logs         String?
+  timestamp    DateTime    @default(now())
+  repositoryId String
+  repository   Repository  @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+}
+
+model RepoStats {
+  id              String     @id @default(uuid())
+  totalCommits    Int        @default(0)
+  contributors    Int        @default(0)
+  primaryLanguage String?
+  stars           Int        @default(0)
+  lastSyncedAt    DateTime   @default(now())
+  repositoryId    String     @unique
+  repository      Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 }
