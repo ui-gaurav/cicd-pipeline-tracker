@@ -39,6 +39,8 @@ model Repository {
 
 model Deployment {
   id           String      @id @default(uuid())
+  deliveryId   String?     @unique           // X-GitHub-Delivery — idempotency key
+  runId        String?                        // GitHub workflow_run / check_suite id for out-of-order upsert
   commitSha    String
   commitAuthor String
   branch       String
@@ -48,6 +50,8 @@ model Deployment {
   timestamp    DateTime    @default(now())
   repositoryId String
   repository   Repository  @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+
+  @@index([runId])
 }
 
 model RepoStats {
