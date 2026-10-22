@@ -7,7 +7,8 @@ const { auth } = NextAuth(authConfig);
 export default auth((req) => {
   const { pathname } = req.nextUrl;
 
-  // Do NOT protect /api/webhooks/github, /login, or /api/auth
+  // Never protect the GitHub webhook, login page, or auth endpoints.
+  // (The matcher below already skips them; this is a safety net in case it changes.)
   if (
     pathname.startsWith('/api/webhooks/github') ||
     pathname.startsWith('/api/auth') ||
@@ -19,7 +20,7 @@ export default auth((req) => {
   const isLoggedIn = !!req.auth;
   const role = req.auth?.user?.role;
 
-  // Unauthenticated users go to /login for everything under /dashboard
+  // Dashboard pages: unauthenticated users go to /login
   if (pathname.startsWith('/dashboard')) {
     if (!isLoggedIn) {
       const loginUrl = new URL('/login', req.nextUrl.origin);
@@ -29,26 +30,24 @@ export default auth((req) => {
     return NextResponse.next();
   }
 
-  // VIEWER gets a 403 JSON response on /api/admin/* (ADMIN is allowed)
+  // Admin-only API: 401 if logged out, 403 for anyone who is not ADMIN
   if (pathname.startsWith('/api/admin')) {
     if (!isLoggedIn) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    if (role === 'VIEWER' || role !== 'ADMIN') {
+    if (role !== 'ADMIN') {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
     return NextResponse.next();
   }
 
-  // VIEWER gets a 403 JSON response on any non-GET request under /api/repos/* (ADMIN is allowed)
+  // Repos API: any logged-in user can read (GET), only ADMIN can write
   if (pathname.startsWith('/api/repos')) {
-    if (req.method !== 'GET') {
-      if (!isLoggedIn) {
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-      }
-      if (role === 'VIEWER' || role !== 'ADMIN') {
-        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-      }
+    if (!isLoggedIn) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    if (req.method !== 'GET' && role !== 'ADMIN') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
     return NextResponse.next();
   }

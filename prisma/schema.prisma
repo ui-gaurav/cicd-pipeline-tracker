@@ -52,6 +52,7 @@ model Deployment {
   repository   Repository  @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
 
   @@index([runId])
+  @@unique([repositoryId, runId]) 
 }
 
 model RepoStats {

@@ -1,29 +1,74 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { verifyGitHubSignature } from '@/lib/github-verify';
 
-// ─── Status mapping ────────────────────────────────────────────────────────────
-// Maps GitHub workflow_run / check_suite conclusions/statuses to our status enum.
+// ─── Status mapping & rank helpers ─────────────────────────────────────────────
+// Maps GitHub workflow_run conclusions/statuses to our status enum.
 function mapStatus(githubStatus: string | null | undefined): string {
     const s = (githubStatus ?? '').toLowerCase();
     if (s === 'queued' || s === 'in_progress' || s === 'waiting' || s === 'requested' || s === 'pending') {
         return 'PENDING';
     }
     if (s === 'success' || s === 'completed') {
-        // "completed" alone is not a conclusion – we check conclusion separately.
-        // If the conclusion itself is "success" this is correct.
         return 'SUCCESS';
     }
     if (s === 'failure' || s === 'timed_out' || s === 'cancelled' || s === 'action_required' || s === 'stale') {
         return 'FAILURE';
     }
-    return 'PENDING'; // safe default for unknown in-progress states
+    return 'PENDING';
 }
 
-// More precise mapper that takes both status and conclusion fields.
 function deriveStatus(status: string | null | undefined, conclusion: string | null | undefined): string {
     if (conclusion) return mapStatus(conclusion);
     return mapStatus(status);
+}
+
+function statusRank(status: string): number {
+    const s = status.toUpperCase();
+    if (s === 'PENDING' || s === 'QUEUED' || s === 'WAITING' || s === 'REQUESTED') return 1;
+    if (s === 'RUNNING' || s === 'IN_PROGRESS') return 2;
+    if (s === 'SUCCESS' || s === 'FAILURE' || s === 'FAILED' || s === 'CANCELLED' || s === 'TIMED_OUT') return 3;
+    return 0;
+}
+
+function isTerminalStatus(status: string): boolean {
+    const s = status.toUpperCase();
+    return s === 'SUCCESS' || s === 'FAILURE' || s === 'FAILED' || s === 'CANCELLED' || s === 'TIMED_OUT';
+}
+
+function shouldUpdateStatus(
+    existingStatus: string | null | undefined,
+    incomingStatus: string,
+    existingTimestamp?: Date | null,
+    incomingUpdatedAt?: string | null
+): boolean {
+    if (!existingStatus) return true;
+
+    const existingTerminal = isTerminalStatus(existingStatus);
+    const incomingRank = statusRank(incomingStatus);
+    const existingRank = statusRank(existingStatus);
+
+    // Rule 1: Never overwrite a terminal status with PENDING or RUNNING
+    if (existingTerminal && (incomingStatus === 'PENDING' || incomingStatus === 'RUNNING')) {
+        return false;
+    }
+
+    // Rule 2: If timestamp comparison is available and incoming is older, don't overwrite
+    if (existingTimestamp && incomingUpdatedAt) {
+        const incomingTime = new Date(incomingUpdatedAt).getTime();
+        const existingTime = existingTimestamp.getTime();
+        if (!isNaN(incomingTime) && !isNaN(existingTime) && incomingTime < existingTime) {
+            return false;
+        }
+    }
+
+    // Rule 3: Never move backwards by rank (PENDING < RUNNING < SUCCESS/FAILED)
+    if (incomingRank < existingRank) {
+        return false;
+    }
+
+    return true;
 }
 
 // ─── Log helpers ────────────────────────────────────────────────────────────────
@@ -50,6 +95,185 @@ async function upsertRepo(owner: string, name: string) {
     });
 }
 
+// ─── Event processing (runs inside after()) ─────────────────────────────────────
+async function processWebhookEvent(
+    event: string,
+    deliveryId: string | null,
+    payload: Record<string, unknown>
+) {
+    const repoPayload = payload.repository as Record<string, unknown> | undefined;
+    const repoName = repoPayload?.name as string | undefined;
+    const repoOwner = (repoPayload?.owner as Record<string, unknown> | undefined)?.login as string
+        ?? (repoPayload?.owner as Record<string, unknown> | undefined)?.name as string
+        ?? undefined;
+
+    switch (event) {
+        // ── Workflow run ──────────────────────────────────────────────────────
+        case 'workflow_run': {
+            const wr = payload.workflow_run as Record<string, unknown> | undefined;
+            if (!repoName || !repoOwner || !wr) {
+                return;
+            }
+
+            // (1) If workflow_run.id is missing, skip the event and log it instead of using an empty-string runId.
+            if (wr.id == null || wr.id === '') {
+                console.warn(`[webhook] Missing workflow_run.id (delivery: ${deliveryId ?? 'unknown'}), skipping event`);
+                return;
+            }
+            const runId = String(wr.id);
+
+            const branch = (wr.head_branch as string) || '';
+            const environment = branch === 'main' ? 'PRODUCTION' : 'STAGING';
+            const status = deriveStatus(wr.status as string, wr.conclusion as string);
+
+            const headCommit = wr.head_commit as Record<string, unknown> | undefined;
+            const commitSha = (wr.head_sha as string) || 'unknown';
+            const commitAuthor =
+                (headCommit?.author as Record<string, unknown> | undefined)?.name as string
+                ?? (wr.actor as Record<string, unknown> | undefined)?.login as string
+                ?? 'Unknown';
+
+            const logSummary = truncateLogs(
+                buildSummary({
+                    Workflow: wr.name as string,
+                    Branch: branch,
+                    Conclusion: wr.conclusion as string,
+                    Status: wr.status as string,
+                    URL: wr.html_url as string,
+                    Commit: commitSha,
+                })
+            );
+
+            const repository = await upsertRepo(repoOwner, repoName);
+
+            // Idempotency: if this exact delivery was already processed, skip.
+            if (deliveryId) {
+                const existingDelivery = await prisma.deployment.findUnique({
+                    where: { deliveryId },
+                    select: { id: true },
+                });
+                if (existingDelivery) {
+                    return;
+                }
+            }
+
+            const updatedAt = (wr.updated_at as string) || undefined;
+            const incomingDate = updatedAt ? new Date(updatedAt) : new Date();
+
+            const doUpsert = async () => {
+                const existing = await prisma.deployment.findUnique({
+                    where: {
+                        repositoryId_runId: {
+                            repositoryId: repository.id,
+                            runId,
+                        },
+                    },
+                    select: {
+                        status: true,
+                        timestamp: true,
+                    },
+                });
+
+                const updateStatus = shouldUpdateStatus(
+                    existing?.status,
+                    status,
+                    existing?.timestamp,
+                    updatedAt
+                );
+
+                await prisma.deployment.upsert({
+                    where: {
+                        repositoryId_runId: {
+                            repositoryId: repository.id,
+                            runId,
+                        },
+                    },
+                    create: {
+                        deliveryId,
+                        runId,
+                        commitSha,
+                        commitAuthor,
+                        branch,
+                        environment,
+                        status,
+                        logs: logSummary,
+                        timestamp: incomingDate,
+                        repositoryId: repository.id,
+                    },
+                    update: {
+                        deliveryId,
+                        logs: logSummary,
+                        ...(updateStatus ? { status, timestamp: incomingDate } : {}),
+                    },
+                });
+            };
+
+            try {
+                await doUpsert();
+            } catch (err: unknown) {
+                if (
+                    err instanceof Prisma.PrismaClientKnownRequestError &&
+                    err.code === 'P2002'
+                ) {
+                    // Retry once on P2002 unique constraint race condition
+                    await doUpsert();
+                } else {
+                    throw err;
+                }
+            }
+            break;
+        }
+
+        // ── Push ──────────────────────────────────────────────────────────────
+        case 'push': {
+            const ref = (payload.ref as string) || '';
+            const branch = ref.replace('refs/heads/', '');
+            const headCommit = payload.head_commit as Record<string, unknown> | undefined;
+
+            if (!repoName || !repoOwner || !headCommit) {
+                return;
+            }
+
+            const environment = branch === 'main' ? 'PRODUCTION' : 'STAGING';
+            const commitSha = headCommit.id as string;
+            const commitAuthor = (headCommit.author as Record<string, unknown> | undefined)?.name as string ?? 'Unknown';
+            const rawLogs = buildSummary({
+                'Commit message': headCommit.message as string,
+                Timestamp: headCommit.timestamp as string,
+            });
+
+            // Idempotency: skip if this delivery was already processed.
+            if (deliveryId) {
+                const existing = await prisma.deployment.findUnique({
+                    where: { deliveryId },
+                    select: { id: true },
+                });
+                if (existing) {
+                    return;
+                }
+            }
+
+            const repository = await upsertRepo(repoOwner, repoName);
+            await prisma.deployment.create({
+                data: {
+                    deliveryId,
+                    commitSha,
+                    commitAuthor,
+                    branch,
+                    environment,
+                    status: 'SUCCESS',
+                    logs: truncateLogs(rawLogs),
+                    repositoryId: repository.id,
+                },
+            });
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
 // ─── Main handler ───────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
     // 1. Read raw body before anything else.
@@ -60,242 +284,41 @@ export async function POST(req: NextRequest) {
     const secret = process.env.GITHUB_WEBHOOK_SECRET;
 
     if (!secret) {
-        // Config error – 500 is appropriate here; we can't do anything without the secret.
         console.error('[webhook] GITHUB_WEBHOOK_SECRET is not set');
         return NextResponse.json({ error: 'Server misconfigured' }, { status: 500 });
     }
 
-    // 2. Verify HMAC before touching the payload (already checks length + timingSafeEqual).
+    // 1. Verify HMAC before touching the payload; return 401 if invalid.
     if (!verifyGitHubSignature(rawBody, signature, secret)) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // 3. Parse JSON only after signature is valid.
+    // 2. Parse JSON only after signature is valid.
     let payload: Record<string, unknown>;
     try {
         payload = JSON.parse(rawBody) as Record<string, unknown>;
     } catch {
-        // Malformed JSON – not a 5xx, return 400 without leaking details.
         return NextResponse.json({ error: 'Bad request: invalid JSON' }, { status: 400 });
     }
 
-    const repoPayload = payload.repository as Record<string, unknown> | undefined;
-    const repoName = repoPayload?.name as string | undefined;
-    const repoOwner = (repoPayload?.owner as Record<string, unknown> | undefined)?.login as string
-        ?? (repoPayload?.owner as Record<string, unknown> | undefined)?.name as string
-        ?? undefined;
-
-    // ── Event switch ─────────────────────────────────────────────────────────────
-    try {
-        switch (event) {
-            // ── Ping ──────────────────────────────────────────────────────────────
-            case 'ping':
-                return NextResponse.json({ ok: true, message: 'pong' }, { status: 200 });
-
-            // ── Workflow run ──────────────────────────────────────────────────────
-            case 'workflow_run': {
-                const wr = payload.workflow_run as Record<string, unknown> | undefined;
-                if (!repoName || !repoOwner || !wr) {
-                    return NextResponse.json({ ok: true, message: 'ignored: missing fields' }, { status: 200 });
-                }
-
-                const branch = (wr.head_branch as string) || '';
-                const environment = branch === 'main' ? 'PRODUCTION' : 'STAGING';
-                const status = deriveStatus(wr.status as string, wr.conclusion as string);
-                const runId = String(wr.id ?? '');
-
-                const headCommit = wr.head_commit as Record<string, unknown> | undefined;
-                const commitSha = (wr.head_sha as string) || 'unknown';
-                const commitAuthor =
-                    (headCommit?.author as Record<string, unknown> | undefined)?.name as string
-                    ?? (wr.actor as Record<string, unknown> | undefined)?.login as string
-                    ?? 'Unknown';
-
-                const logSummary = truncateLogs(
-                    buildSummary({
-                        Workflow: wr.name as string,
-                        Branch: branch,
-                        Conclusion: wr.conclusion as string,
-                        Status: wr.status as string,
-                        URL: wr.html_url as string,
-                        Commit: commitSha,
-                    })
-                );
-
-                const repository = await upsertRepo(repoOwner, repoName);
-
-                // 4. Idempotency: if we already processed this delivery, skip.
-                if (deliveryId) {
-                    const existing = await prisma.deployment.findUnique({
-                        where: { deliveryId },
-                        select: { id: true },
-                    });
-                    if (existing) {
-                        return NextResponse.json({ ok: true, message: 'duplicate delivery ignored' }, { status: 200 });
-                    }
-                }
-
-                // 5. Out-of-order: upsert by runId (same run, later event updates the row).
-                if (runId) {
-                    const byRunId = await prisma.deployment.findFirst({
-                        where: { runId },
-                        select: { id: true },
-                    });
-                    if (byRunId) {
-                        await prisma.deployment.update({
-                            where: { id: byRunId.id },
-                            data: {
-                                deliveryId,
-                                status,
-                                logs: logSummary,
-                                // branch/env/sha/author don't change between run events
-                            },
-                        });
-                        return NextResponse.json({ ok: true, event: 'workflow_run_updated' }, { status: 200 });
-                    }
-                }
-
-                await prisma.deployment.create({
-                    data: {
-                        deliveryId,
-                        runId,
-                        commitSha,
-                        commitAuthor,
-                        branch,
-                        environment,
-                        status,
-                        logs: logSummary,
-                        repositoryId: repository.id,
-                    },
-                });
-
-                return NextResponse.json({ ok: true, event: 'workflow_run_recorded' }, { status: 201 });
-            }
-
-            // ── Check suite ───────────────────────────────────────────────────────
-            case 'check_suite': {
-                const cs = payload.check_suite as Record<string, unknown> | undefined;
-                if (!repoName || !repoOwner || !cs) {
-                    return NextResponse.json({ ok: true, message: 'ignored: missing fields' }, { status: 200 });
-                }
-
-                const branch = (cs.head_branch as string) || '';
-                const environment = branch === 'main' ? 'PRODUCTION' : 'STAGING';
-                const status = deriveStatus(cs.status as string, cs.conclusion as string);
-                const runId = `cs-${String(cs.id ?? '')}`;
-                const commitSha = (cs.head_sha as string) || 'unknown';
-                const headCommit = cs.head_commit as Record<string, unknown> | undefined;
-                const commitAuthor =
-                    (headCommit?.author as Record<string, unknown> | undefined)?.name as string
-                    ?? (payload.sender as Record<string, unknown> | undefined)?.login as string
-                    ?? 'Unknown';
-
-                const logSummary = truncateLogs(
-                    buildSummary({
-                        'Check Suite ID': String(cs.id ?? ''),
-                        Branch: branch,
-                        Conclusion: cs.conclusion as string,
-                        Status: cs.status as string,
-                        Commit: commitSha,
-                    })
-                );
-
-                const repository = await upsertRepo(repoOwner, repoName);
-
-                // Idempotency check
-                if (deliveryId) {
-                    const existing = await prisma.deployment.findUnique({
-                        where: { deliveryId },
-                        select: { id: true },
-                    });
-                    if (existing) {
-                        return NextResponse.json({ ok: true, message: 'duplicate delivery ignored' }, { status: 200 });
-                    }
-                }
-
-                // Out-of-order: upsert by runId
-                const byRunId = await prisma.deployment.findFirst({
-                    where: { runId },
-                    select: { id: true },
-                });
-                if (byRunId) {
-                    await prisma.deployment.update({
-                        where: { id: byRunId.id },
-                        data: { deliveryId, status, logs: logSummary },
-                    });
-                    return NextResponse.json({ ok: true, event: 'check_suite_updated' }, { status: 200 });
-                }
-
-                await prisma.deployment.create({
-                    data: {
-                        deliveryId,
-                        runId,
-                        commitSha,
-                        commitAuthor,
-                        branch,
-                        environment,
-                        status,
-                        logs: logSummary,
-                        repositoryId: repository.id,
-                    },
-                });
-
-                return NextResponse.json({ ok: true, event: 'check_suite_recorded' }, { status: 201 });
-            }
-
-            // ── Push (optional, keep existing behaviour) ──────────────────────────
-            case 'push': {
-                const ref = (payload.ref as string) || '';
-                const branch = ref.replace('refs/heads/', '');
-                const headCommit = payload.head_commit as Record<string, unknown> | undefined;
-
-                if (!repoName || !repoOwner || !headCommit) {
-                    return NextResponse.json({ ok: true, message: 'push: missing fields' }, { status: 200 });
-                }
-
-                const environment = branch === 'main' ? 'PRODUCTION' : 'STAGING';
-                const commitSha = headCommit.id as string;
-                const commitAuthor = (headCommit.author as Record<string, unknown> | undefined)?.name as string ?? 'Unknown';
-                const rawLogs = buildSummary({
-                    'Commit message': headCommit.message as string,
-                    Timestamp: headCommit.timestamp as string,
-                });
-
-                // Idempotency: skip if this delivery was already processed.
-                if (deliveryId) {
-                    const existing = await prisma.deployment.findUnique({
-                        where: { deliveryId },
-                        select: { id: true },
-                    });
-                    if (existing) {
-                        return NextResponse.json({ ok: true, message: 'duplicate delivery ignored' }, { status: 200 });
-                    }
-                }
-
-                const repository = await upsertRepo(repoOwner, repoName);
-                await prisma.deployment.create({
-                    data: {
-                        deliveryId,
-                        commitSha,
-                        commitAuthor,
-                        branch,
-                        environment,
-                        status: 'SUCCESS',
-                        logs: truncateLogs(rawLogs),
-                        repositoryId: repository.id,
-                    },
-                });
-
-                return NextResponse.json({ ok: true, event: 'push_recorded' }, { status: 201 });
-            }
-
-            // ── Anything else: acknowledge and ignore ──────────────────────────────
-            default:
-                return NextResponse.json({ ok: true, message: `ignored event: ${event}` }, { status: 200 });
-        }
-    } catch (err: unknown) {
-        // Log without secrets; return 200 so GitHub doesn't retry (payload problem we can't fix).
-        console.error('[webhook] processing error:', err instanceof Error ? err.message : String(err));
-        return NextResponse.json({ ok: false, message: 'processing error' }, { status: 200 });
+    // Return 200 without doing anything for ping, check_suite, and any unhandled event types.
+    if (event === 'ping' || event === 'check_suite' || !['workflow_run', 'push'].includes(event)) {
+        return NextResponse.json({ ok: true });
     }
+
+    // Move all event handling into after() from next/server.
+    // Wrap in try/catch that logs event type and x-github-delivery id on failure.
+    after(async () => {
+        try {
+            await processWebhookEvent(event, deliveryId, payload);
+        } catch (err: unknown) {
+            console.error(
+                `[webhook] Failed to process event "${event}" with delivery ID "${deliveryId ?? 'unknown'}":`,
+                err instanceof Error ? err.message : String(err)
+            );
+        }
+    });
+
+    // Return immediately; no await on Prisma or GitHub API before response.
+    return NextResponse.json({ ok: true });
 }
