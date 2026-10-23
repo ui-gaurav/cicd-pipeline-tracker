@@ -52,6 +52,14 @@ export default auth((req) => {
     return NextResponse.next();
   }
 
+  // Deployments API: requires auth (401 if logged out)
+  if (pathname.startsWith('/api/deployments')) {
+    if (!isLoggedIn) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    return NextResponse.next();
+  }
+
   return NextResponse.next();
 });
 
@@ -60,5 +68,6 @@ export const config = {
     '/dashboard/:path*',
     '/api/admin/:path*',
     '/api/repos/:path*',
+    '/api/deployments/:path*',
   ],
 };

@@ -3,6 +3,33 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* Status Colors */
+  --status-passing-bg: #ecfdf5;
+  --status-passing-text: #065f46;
+  --status-passing-border: #a7f3d0;
+  --status-passing-dot: #10b981;
+
+  --status-failing-bg: #fef2f2;
+  --status-failing-text: #991b1b;
+  --status-failing-border: #fecaca;
+  --status-failing-dot: #ef4444;
+
+  --status-pending-bg: #fffbeb;
+  --status-pending-text: #92400e;
+  --status-pending-border: #fde68a;
+  --status-pending-dot: #f59e0b;
+
+  /* Card and Component Styles */
+  --card-bg: #ffffff;
+  --card-border: #e4e4e7;
+  --card-border-width: 1px;
+  --card-radius: 0.75rem;
+
+  --badge-radius: 9999px;
+  --badge-border-width: 1px;
+
+  --tab-radius: 0.5rem;
 }
 
 @theme inline {
@@ -16,6 +43,26 @@
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+
+    /* Status Colors Dark */
+    --status-passing-bg: rgba(6, 95, 70, 0.25);
+    --status-passing-text: #34d399;
+    --status-passing-border: rgba(52, 211, 153, 0.35);
+    --status-passing-dot: #10b981;
+
+    --status-failing-bg: rgba(153, 27, 27, 0.25);
+    --status-failing-text: #f87171;
+    --status-failing-border: rgba(248, 113, 113, 0.35);
+    --status-failing-dot: #ef4444;
+
+    --status-pending-bg: rgba(146, 64, 14, 0.25);
+    --status-pending-text: #fbbf24;
+    --status-pending-border: rgba(251, 191, 36, 0.35);
+    --status-pending-dot: #f59e0b;
+
+    /* Card Dark */
+    --card-bg: #18181b;
+    --card-border: #27272a;
   }
 }
 
