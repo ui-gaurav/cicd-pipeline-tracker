@@ -1,73 +1,90 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #F6F5F1; --foreground: #111111;
+  --card: #FFFFFF; --card-foreground: #111111;
+  --primary: #111111; --primary-foreground: #FFFFFF;
+  --muted: #EDECE7; --muted-foreground: #6B6B6B;
+  --accent: #FF5A1F; --accent-foreground: #FFFFFF;
+  --destructive: #C62828;
+  --border: #111111; --input: #111111; --ring: #111111;
+  --radius: 0.125rem;
+  --status-pass: #1F8A4C; --status-pending: #C77700;
+  --status-fail: #C62828; --status-idle: #6B6B6B;
+}
 
-  /* Status Colors */
-  --status-passing-bg: #ecfdf5;
-  --status-passing-text: #065f46;
-  --status-passing-border: #a7f3d0;
-  --status-passing-dot: #10b981;
+.dark {
+  --background: #111111; --foreground: #F6F5F1;
+  --card: #1A1A1A; --card-foreground: #F6F5F1;
+  --primary: #F6F5F1; --primary-foreground: #111111;
+  --muted: #262626; --muted-foreground: #999999;
+  --border: #333333; --input: #333333; --ring: #F6F5F1;
+}
 
-  --status-failing-bg: #fef2f2;
-  --status-failing-text: #991b1b;
-  --status-failing-border: #fecaca;
-  --status-failing-dot: #ef4444;
-
-  --status-pending-bg: #fffbeb;
-  --status-pending-text: #92400e;
-  --status-pending-border: #fde68a;
-  --status-pending-dot: #f59e0b;
-
-  /* Card and Component Styles */
-  --card-bg: #ffffff;
-  --card-border: #e4e4e7;
-  --card-border-width: 1px;
-  --card-radius: 0.75rem;
-
-  --badge-radius: 9999px;
-  --badge-border-width: 1px;
-
-  --tab-radius: 0.5rem;
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #111111; --foreground: #F6F5F1;
+    --card: #1A1A1A; --card-foreground: #F6F5F1;
+    --primary: #F6F5F1; --primary-foreground: #111111;
+    --muted: #262626; --muted-foreground: #999999;
+    --border: #333333; --input: #333333; --ring: #F6F5F1;
+  }
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius: var(--radius);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-
-    /* Status Colors Dark */
-    --status-passing-bg: rgba(6, 95, 70, 0.25);
-    --status-passing-text: #34d399;
-    --status-passing-border: rgba(52, 211, 153, 0.35);
-    --status-passing-dot: #10b981;
-
-    --status-failing-bg: rgba(153, 27, 27, 0.25);
-    --status-failing-text: #f87171;
-    --status-failing-border: rgba(248, 113, 113, 0.35);
-    --status-failing-dot: #ef4444;
-
-    --status-pending-bg: rgba(146, 64, 14, 0.25);
-    --status-pending-text: #fbbf24;
-    --status-pending-border: rgba(251, 191, 36, 0.35);
-    --status-pending-dot: #f59e0b;
-
-    /* Card Dark */
-    --card-bg: #18181b;
-    --card-border: #27272a;
-  }
+* {
+  border-color: var(--border);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+.section-label {
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+}
+
+@keyframes realtime-flash {
+  0% {
+    background-color: rgb(255 90 31 / 0.15);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.animate-realtime-flash {
+  animation: realtime-flash 150ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-realtime-flash {
+    animation: none;
+  }
 }

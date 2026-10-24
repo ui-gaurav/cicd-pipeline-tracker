@@ -82,7 +82,7 @@ export function FailureLogPanel({ deploymentId, onClose, repoName }: FailureLogP
     >
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/60 backdrop-blur-xs transition-opacity"
+        className="fixed inset-0 bg-black/50 transition-opacity"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -91,25 +91,29 @@ export function FailureLogPanel({ deploymentId, onClose, repoName }: FailureLogP
       <div className="fixed inset-y-0 right-0 max-w-full flex pl-10">
         <div
           ref={panelRef}
-          className="w-screen max-w-2xl bg-white dark:bg-zinc-900 border-l border-zinc-200 dark:border-zinc-800 shadow-2xl flex flex-col"
+          className="w-screen max-w-2xl flex flex-col border-l border-[var(--border)]"
+          style={{
+            backgroundColor: 'var(--card)',
+            color: 'var(--card-foreground)',
+            borderRadius: '2px',
+          }}
         >
           {/* Header */}
-          <div className="px-6 py-5 border-b border-zinc-200 dark:border-zinc-800 flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2
-                    id="failure-log-title"
-                    className="text-lg font-bold text-zinc-900 dark:text-zinc-100"
-                  >
-                    Failure Logs
-                  </h2>
-                  {data && <StatusBadge status={data.status} />}
-                </div>
-                <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-0.5">
-                  {repoName || data?.repository?.name || 'Repository'} • Run #{data?.runId || 'N/A'}
-                </p>
+          <div className="px-6 py-4 border-b border-[var(--border)] flex items-center justify-between">
+            <div className="flex flex-col gap-1">
+              <span className="section-label">FAILURE LOG</span>
+              <div className="flex items-center gap-2">
+                <h2
+                  id="failure-log-title"
+                  className="text-base font-medium text-[var(--foreground)]"
+                >
+                  {repoName || data?.repository?.name || 'Repository'}
+                </h2>
+                {data && <StatusBadge status={data.status} />}
               </div>
+              <p className="text-xs text-[var(--muted-foreground)] font-mono">
+                Run #{data?.runId || 'N/A'}
+              </p>
             </div>
 
             <div className="flex items-center gap-2">
@@ -117,97 +121,86 @@ export function FailureLogPanel({ deploymentId, onClose, repoName }: FailureLogP
                 <button
                   type="button"
                   onClick={handleCopy}
-                  className="px-2.5 py-1 text-xs font-medium rounded-md border border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 transition-colors cursor-pointer"
+                  className="px-2.5 py-1 text-xs font-mono border border-[var(--border)] bg-transparent text-[var(--foreground)] hover:bg-[var(--muted)] rounded-[2px] transition-colors cursor-pointer"
                 >
-                  {copied ? 'Copied!' : 'Copy logs'}
+                  {copied ? 'Copied' : 'Copy'}
                 </button>
               )}
               <button
                 type="button"
                 onClick={onClose}
                 aria-label="Close failure log panel"
-                className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer"
+                className="px-2 py-1 text-xs font-mono border border-[var(--border)] bg-transparent text-[var(--foreground)] hover:bg-[var(--muted)] rounded-[2px] transition-colors cursor-pointer"
               >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
+                Close
               </button>
             </div>
           </div>
 
           {/* Metadata bar */}
           {data && (
-            <div className="px-6 py-3 bg-zinc-50 dark:bg-zinc-950/60 border-b border-zinc-200 dark:border-zinc-800 text-xs text-zinc-600 dark:text-zinc-400 flex flex-wrap gap-x-6 gap-y-1">
+            <div className="px-6 py-2.5 border-b border-[var(--border)] bg-[var(--background)] text-xs text-[var(--muted-foreground)] flex flex-wrap gap-x-6 gap-y-1 font-mono">
               <div>
-                <span className="font-medium text-zinc-900 dark:text-zinc-300">Commit:</span>{' '}
-                <span className="font-mono">{data.commitSha.slice(0, 7)}</span>
+                <span>SHA:</span>{' '}
+                <span className="text-[var(--foreground)]">{data.commitSha.slice(0, 7)}</span>
               </div>
               <div>
-                <span className="font-medium text-zinc-900 dark:text-zinc-300">Author:</span>{' '}
-                {data.commitAuthor}
+                <span>Author:</span>{' '}
+                <span className="text-[var(--foreground)]">{data.commitAuthor}</span>
               </div>
               <div>
-                <span className="font-medium text-zinc-900 dark:text-zinc-300">Branch:</span>{' '}
-                {data.branch}
+                <span>Branch:</span>{' '}
+                <span className="text-[var(--foreground)]">{data.branch}</span>
               </div>
               <div>
-                <span className="font-medium text-zinc-900 dark:text-zinc-300">Env:</span>{' '}
-                {data.environment}
+                <span>Env:</span>{' '}
+                <span className="text-[var(--foreground)]">{data.environment}</span>
               </div>
             </div>
           )}
 
           {/* Main content */}
-          <div className="flex-1 overflow-y-auto p-6">
+          <div className="flex-1 overflow-y-auto p-6 flex flex-col">
             {isLoading && (
-              <div className="flex flex-col items-center justify-center h-64 text-zinc-500 dark:text-zinc-400">
-                <div className="w-8 h-8 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin mb-3" />
-                <p className="text-sm">Fetching run details...</p>
+              <div className="flex flex-col items-center justify-center h-64 text-[var(--muted-foreground)]">
+                <p className="text-xs font-mono uppercase tracking-wider">Loading run details...</p>
               </div>
             )}
 
             {error && (
-              <div className="p-4 rounded-lg bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-800 dark:text-red-300 text-sm">
-                <p className="font-semibold">Failed to load run details</p>
+              <div className="p-4 border border-[var(--destructive)] bg-[var(--card)] text-[var(--destructive)] text-xs font-mono rounded-[2px]">
+                <p className="font-bold">Error loading run details</p>
                 <p className="mt-1">{error.message || 'Error fetching run logs'}</p>
               </div>
             )}
 
             {!isLoading && !error && data && (
-              <div>
+              <div className="flex-1 flex flex-col">
                 {processedLogs ? (
-                  <div>
+                  <div className="flex-1 flex flex-col">
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400 font-mono">
+                      <span className="section-label">
                         {logLineCount > 200
-                          ? `Showing last 200 lines (of ${logLineCount} total)`
+                          ? `Last 200 lines (of ${logLineCount} total)`
                           : `${logLineCount} lines`}
                       </span>
                     </div>
-                    <div className="bg-zinc-950 text-zinc-200 rounded-lg p-4 font-mono text-xs overflow-x-auto border border-zinc-800 max-h-[calc(100vh-280px)]">
-                      <pre className="whitespace-pre">{processedLogs}</pre>
+                    <div
+                      className="flex-1 p-4 overflow-auto border border-[var(--border)] rounded-[2px]"
+                      style={{
+                        backgroundColor: 'var(--muted)',
+                        color: 'var(--foreground)',
+                      }}
+                    >
+                      <pre className="font-mono text-[12px] leading-[1.6] whitespace-pre">
+                        {processedLogs}
+                      </pre>
                     </div>
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center justify-center h-64 text-center p-6 border-2 border-dashed border-zinc-200 dark:border-zinc-800 rounded-xl">
-                    <svg
-                      className="w-10 h-10 text-zinc-400 dark:text-zinc-600 mb-2"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={1.5}
-                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                      />
-                    </svg>
-                    <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                  <div className="flex flex-col items-center justify-center h-64 text-center p-6 border border-dashed border-[var(--border)] rounded-[2px]">
+                    <p className="text-xs font-mono uppercase text-[var(--muted-foreground)]">
                       No logs captured for this run.
-                    </p>
-                    <p className="text-xs text-zinc-500 dark:text-zinc-500 mt-1">
-                      No console output or diagnostic logs were attached with this delivery.
                     </p>
                   </div>
                 )}

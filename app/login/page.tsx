@@ -41,12 +41,12 @@ function LoginForm() {
   };
 
   return (
-    <div className="w-full max-w-md p-8 space-y-6 bg-white dark:bg-zinc-900 rounded-xl shadow-lg border border-zinc-200 dark:border-zinc-800">
-      <div className="text-center space-y-2">
-        <h1 className="text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+    <div className="w-full max-w-md p-6 space-y-5 bg-[var(--card)] border border-[var(--border)] rounded-[2px]">
+      <div className="space-y-1">
+        <h1 className="text-lg font-medium text-[var(--foreground)]">
           Sign In
         </h1>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+        <p className="text-xs text-[var(--muted-foreground)]">
           Enter your credentials to access the CI/CD Deployment Board
         </p>
       </div>
@@ -54,22 +54,9 @@ function LoginForm() {
       {error && (
         <div
           role="alert"
-          className="p-3 text-sm text-red-700 bg-red-50 dark:bg-red-950/50 dark:text-red-300 rounded-lg border border-red-200 dark:border-red-900 flex items-center gap-2"
+          className="p-3 text-xs font-mono text-[var(--destructive)] border border-[var(--destructive)] bg-[var(--card)] rounded-[2px]"
         >
-          <svg
-            className="w-4 h-4 shrink-0 text-red-500"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-            />
-          </svg>
-          <span>{error}</span>
+          {error}
         </div>
       )}
 
@@ -77,7 +64,7 @@ function LoginForm() {
         <div>
           <label
             htmlFor="email"
-            className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1"
+            className="block text-xs font-mono uppercase tracking-[0.08em] text-[var(--muted-foreground)] mb-1"
           >
             Email Address
           </label>
@@ -90,14 +77,14 @@ function LoginForm() {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="admin@cicd.internal"
-            className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-1.5 text-xs font-mono border border-[var(--input)] bg-[var(--background)] text-[var(--foreground)] rounded-[2px] focus:outline-none focus:outline-2 focus:outline-[var(--ring)]"
           />
         </div>
 
         <div>
           <label
             htmlFor="password"
-            className="block text-sm font-medium text-zinc-700 dark:text-zinc-300 mb-1"
+            className="block text-xs font-mono uppercase tracking-[0.08em] text-[var(--muted-foreground)] mb-1"
           >
             Password
           </label>
@@ -110,14 +97,14 @@ function LoginForm() {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="••••••••"
-            className="w-full px-3 py-2 text-sm rounded-lg border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 placeholder-zinc-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            className="w-full px-3 py-1.5 text-xs font-mono border border-[var(--input)] bg-[var(--background)] text-[var(--foreground)] rounded-[2px] focus:outline-none focus:outline-2 focus:outline-[var(--ring)]"
           />
         </div>
 
         <button
           type="submit"
           disabled={loading}
-          className="w-full py-2.5 px-4 text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="w-full py-2 px-4 text-xs font-mono uppercase tracking-[0.08em] rounded-[2px] text-[var(--primary-foreground)] bg-[var(--primary)] border border-[var(--primary)] hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity cursor-pointer"
         >
           {loading ? 'Signing in...' : 'Sign In'}
         </button>
@@ -128,8 +115,8 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <div className="min-h-screen flex items-center justify-center bg-zinc-50 dark:bg-zinc-950 px-4">
-      <Suspense fallback={<div className="text-zinc-500">Loading...</div>}>
+    <div className="min-h-screen flex items-center justify-center bg-[var(--background)] px-4">
+      <Suspense fallback={<div className="text-xs font-mono text-[var(--muted-foreground)]">Loading...</div>}>
         <LoginForm />
       </Suspense>
     </div>

@@ -5,33 +5,29 @@ export async function Header() {
   const session = await auth();
 
   return (
-    <header className="border-b border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-6 py-4">
+    <header className="border-b border-[var(--border)] bg-[var(--card)] px-6 py-3">
       <div className="max-w-7xl mx-auto flex items-center justify-between">
         <div className="flex items-center gap-6">
           <Link
             href="/dashboard"
-            className="text-lg font-bold text-zinc-900 dark:text-zinc-50 tracking-tight"
+            className="text-base font-medium text-[var(--foreground)] tracking-tight"
           >
             CI/CD Board
           </Link>
-          <nav className="hidden sm:flex items-center gap-4 text-sm font-medium text-zinc-600 dark:text-zinc-400">
-            <Link href="/dashboard" className="hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors">
+          <nav className="hidden sm:flex items-center gap-4 text-xs font-mono uppercase tracking-[0.08em] text-[var(--muted-foreground)]">
+            <Link href="/dashboard" className="hover:text-[var(--foreground)] transition-colors">
               Dashboard
             </Link>
           </nav>
         </div>
 
         {session?.user ? (
-          <div className="flex items-center gap-4">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-[var(--muted-foreground)] font-mono">
               {session.user.email}
             </span>
             <span
-              className={`px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider ${
-                session.user.role === 'ADMIN'
-                  ? 'bg-purple-100 text-purple-800 dark:bg-purple-950 dark:text-purple-300 border border-purple-300 dark:border-purple-800'
-                  : 'bg-zinc-100 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-300 border border-zinc-300 dark:border-zinc-700'
-              }`}
+              className="px-2 py-0.5 rounded-[2px] text-[11px] font-mono uppercase border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)]"
             >
               {session.user.role}
             </span>
@@ -43,7 +39,7 @@ export async function Header() {
             >
               <button
                 type="submit"
-                className="text-sm font-medium text-red-600 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300 px-3 py-1.5 rounded-md hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
+                className="text-[11px] font-mono uppercase tracking-[0.08em] border border-[var(--border)] bg-transparent text-[var(--foreground)] hover:bg-[var(--muted)] px-2.5 py-1 rounded-[2px] transition-colors cursor-pointer"
               >
                 Sign out
               </button>
@@ -52,7 +48,7 @@ export async function Header() {
         ) : (
           <Link
             href="/login"
-            className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+            className="text-xs font-mono uppercase border border-[var(--border)] px-2.5 py-1 rounded-[2px] text-[var(--foreground)] hover:bg-[var(--muted)]"
           >
             Sign in
           </Link>

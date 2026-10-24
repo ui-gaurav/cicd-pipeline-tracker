@@ -13,7 +13,7 @@ function getSnapshot(dateInput: string | Date | number): string {
   const diffInSeconds = Math.floor((now - date.getTime()) / 1000);
 
   if (isNaN(diffInSeconds)) return '';
-  if (diffInSeconds < 10) return 'just now';
+  if (diffInSeconds < 10) return 'Just now';
   if (diffInSeconds < 60) return `${diffInSeconds}s ago`;
 
   const minutes = Math.floor(diffInSeconds / 60);

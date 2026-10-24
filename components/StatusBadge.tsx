@@ -1,5 +1,4 @@
 import React from 'react';
-import { mapStatusCategory, StatusCategory } from '@/lib/status';
 
 export interface StatusBadgeProps {
   status: string;
@@ -7,56 +6,44 @@ export interface StatusBadgeProps {
   showText?: boolean;
 }
 
-export function StatusBadge({ status, className = '', showText = true }: StatusBadgeProps) {
-  const category: StatusCategory = mapStatusCategory(status);
+type BadgeStatus = 'PASSED' | 'FAILED' | 'RUNNING' | 'PENDING';
 
-  const styleConfig = {
-    passing: {
-      style: {
-        backgroundColor: 'var(--status-passing-bg)',
-        color: 'var(--status-passing-text)',
-        borderColor: 'var(--status-passing-border)',
-        borderWidth: 'var(--badge-border-width, 1px)',
-        borderRadius: 'var(--badge-radius, 9999px)',
-      },
-      dotColor: 'var(--status-passing-dot)',
-      label: status.toUpperCase() === 'SUCCESS' ? 'Passing' : status,
-    },
-    failing: {
-      style: {
-        backgroundColor: 'var(--status-failing-bg)',
-        color: 'var(--status-failing-text)',
-        borderColor: 'var(--status-failing-border)',
-        borderWidth: 'var(--badge-border-width, 1px)',
-        borderRadius: 'var(--badge-radius, 9999px)',
-      },
-      dotColor: 'var(--status-failing-dot)',
-      label: ['FAILED', 'FAILURE'].includes(status.toUpperCase()) ? 'Failed' : status,
-    },
-    pending: {
-      style: {
-        backgroundColor: 'var(--status-pending-bg)',
-        color: 'var(--status-pending-text)',
-        borderColor: 'var(--status-pending-border)',
-        borderWidth: 'var(--badge-border-width, 1px)',
-        borderRadius: 'var(--badge-radius, 9999px)',
-      },
-      dotColor: 'var(--status-pending-dot)',
-      label: status.toUpperCase() === 'RUNNING' ? 'Running' : 'Pending',
-    },
-  }[category];
+function getBadgeConfig(status: string | null | undefined): { label: BadgeStatus; color: string } {
+  const s = (status ?? '').toUpperCase();
+  if (s === 'SUCCESS' || s === 'PASSED') {
+    return { label: 'PASSED', color: 'var(--status-pass)' };
+  }
+  if (['FAILED', 'FAILURE', 'CANCELLED', 'TIMED_OUT'].includes(s)) {
+    return { label: 'FAILED', color: 'var(--status-fail)' };
+  }
+  if (s === 'RUNNING' || s === 'IN_PROGRESS') {
+    return { label: 'RUNNING', color: 'var(--status-pending)' };
+  }
+  if (['PENDING', 'QUEUED', 'WAITING', 'REQUESTED'].includes(s)) {
+    return { label: 'PENDING', color: 'var(--status-pending)' };
+  }
+  return { label: 'PENDING', color: 'var(--status-idle)' };
+}
+
+export function StatusBadge({ status, className = '', showText = true }: StatusBadgeProps) {
+  const { label, color } = getBadgeConfig(status);
 
   return (
     <span
-      style={styleConfig.style}
-      className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider border select-none ${className}`}
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 border border-[var(--border)] rounded-[2px] bg-[var(--card)] text-[var(--foreground)] font-mono text-[11px] uppercase tracking-wider select-none ${className}`}
+      style={{
+        borderWidth: '1px',
+        borderColor: 'var(--border)',
+        borderRadius: '2px',
+        color: 'var(--foreground)',
+      }}
     >
       <span
-        className={`w-2 h-2 rounded-full shrink-0 ${category === 'pending' ? 'animate-pulse' : ''}`}
-        style={{ backgroundColor: styleConfig.dotColor }}
+        className="w-[8px] h-[8px] shrink-0"
+        style={{ backgroundColor: color }}
         aria-hidden="true"
       />
-      {showText && <span>{styleConfig.label}</span>}
+      {showText && <span>{label}</span>}
     </span>
   );
 }

@@ -50,8 +50,7 @@ export function EnvironmentTabs({ selectedTab, onSelectTab, counts }: Environmen
     <div
       role="tablist"
       aria-label="Filter deployments by environment"
-      className="inline-flex p-1 bg-zinc-100 dark:bg-zinc-800/80 border border-zinc-200 dark:border-zinc-700/60"
-      style={{ borderRadius: 'var(--tab-radius, 0.5rem)' }}
+      className="inline-flex items-center gap-1.5"
     >
       {TABS.map((tab, idx) => {
         const isSelected = selectedTab === tab.id;
@@ -70,23 +69,25 @@ export function EnvironmentTabs({ selectedTab, onSelectTab, counts }: Environmen
             tabIndex={isSelected ? 0 : -1}
             onClick={() => onSelectTab(tab.id)}
             onKeyDown={(e) => handleKeyDown(e, idx)}
-            className={`flex items-center gap-2 px-3.5 py-1.5 text-sm font-medium transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-zinc-900 cursor-pointer ${
+            className={`flex items-center gap-1.5 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.08em] border border-[var(--border)] rounded-[2px] transition-colors focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--ring)] focus-visible:outline-offset-2 cursor-pointer ${
               isSelected
-                ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-50 shadow-xs font-semibold'
-                : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 hover:bg-zinc-200/50 dark:hover:bg-zinc-700/50'
+                ? 'bg-[var(--primary)] text-[var(--primary-foreground)]'
+                : 'bg-transparent text-[var(--foreground)] hover:bg-[var(--muted)]'
             }`}
-            style={{ borderRadius: 'calc(var(--tab-radius, 0.5rem) - 2px)' }}
+            style={{
+              borderColor: 'var(--border)',
+              borderRadius: '2px',
+              borderWidth: '1px',
+            }}
           >
             <span>{tab.label}</span>
             {count !== null && count !== undefined && (
               <span
-                className={`px-1.5 py-0.2 rounded-full text-xs ${
-                  isSelected
-                    ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-800 dark:text-zinc-200'
-                    : 'bg-zinc-200/80 dark:bg-zinc-700/70 text-zinc-600 dark:text-zinc-400'
+                className={`text-[10px] ${
+                  isSelected ? 'text-[var(--primary-foreground)] opacity-80' : 'text-[var(--muted-foreground)]'
                 }`}
               >
-                {count}
+                ({count})
               </span>
             )}
           </button>
