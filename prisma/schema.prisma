@@ -61,6 +61,7 @@ model RepoStats {
   contributors    Int        @default(0)
   primaryLanguage String?
   stars           Int        @default(0)
+  openIssues      Int        @default(0)
   lastSyncedAt    DateTime   @default(now())
   repositoryId    String     @unique
   repository      Repository @relation(fields: [repositoryId], references: [id], onDelete: Cascade)

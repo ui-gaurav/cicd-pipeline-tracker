@@ -238,6 +238,7 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
           {filteredCards.map((card) => (
             <RepoCard
               key={card.cardKey}
+              repoId={card.repoId}
               repoName={card.repoName}
               repoOwner={card.repoOwner}
               run={card.run}

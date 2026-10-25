@@ -1,12 +1,14 @@
 'use client';
 
 import React from 'react';
+import Link from 'next/link';
 import StatusBadge from './StatusBadge';
 import RelativeTime from './RelativeTime';
 import { isFailingStatus } from '@/lib/status';
 import type { DeploymentItem } from '@/types/deployments';
 
 export interface RepoCardProps {
+  repoId?: string;
   repoName: string;
   repoOwner?: string;
   run: DeploymentItem;
@@ -19,7 +21,7 @@ function toSentenceCase(str: string): string {
   return str.charAt(0).toUpperCase() + str.slice(1);
 }
 
-export function RepoCard({ repoName, repoOwner, run, isFlashed, onOpenFailureLogs }: RepoCardProps) {
+export function RepoCard({ repoId, repoName, repoOwner, run, isFlashed, onOpenFailureLogs }: RepoCardProps) {
   const failing = isFailingStatus(run.status);
 
   const handleClick = () => {
@@ -62,7 +64,17 @@ export function RepoCard({ repoName, repoOwner, run, isFlashed, onOpenFailureLog
               </span>
             )}
             <h3 className="text-[15px] font-medium text-[var(--card-foreground)] truncate">
-              {toSentenceCase(repoName)}
+              {repoId ? (
+                <Link
+                  href={`/dashboard/${repoId}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="hover:underline focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--ring)]"
+                >
+                  {toSentenceCase(repoName)}
+                </Link>
+              ) : (
+                toSentenceCase(repoName)
+              )}
             </h3>
           </div>
           <span className="section-label shrink-0">
