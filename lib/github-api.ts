@@ -98,3 +98,113 @@ export async function fetchRepoStats(owner: string, repo: string): Promise<GitHu
     primaryLanguage,
   };
 }
+
+export function cleanJobLog(rawLogs: string): string {
+  // 1. Strip ANSI colour codes
+  const ansiRegex =
+    /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]|\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
+  const noAnsi = rawLogs.replace(ansiRegex, '');
+
+  // 2. Keep only the last 150 lines
+  const lines = noAnsi.split(/\r?\n/);
+  const last150 = lines.slice(-150);
+
+  // 3. Strip leading timestamps: e.g. "2026-10-25T12:34:56.7890123Z " or "[2026-10-25 12:34:56] "
+  const timestampRegex =
+    /^\[?\d{4}[-/]\d{2}[-/]\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\]?\s*/;
+
+  // 4. Mask anything that looks like a token (ghp_, github_pat_, Bearer values)
+  const cleaned = last150.map((line) => {
+    return line
+      .replace(timestampRegex, '')
+      .replace(/(Bearer\s+)["']?\S+?["']?(?=[\s,;]|"|'|$)/gi, '$1***')
+      .replace(/ghp_[A-Za-z0-9_-]+/g, '***')
+      .replace(/github_pat_[A-Za-z0-9_-]+/g, '***');
+  });
+
+  return cleaned.join('\n');
+}
+
+export async function fetchFailedJobLog(
+  owner: string,
+  repo: string,
+  runId: string | number
+): Promise<string | null> {
+  try {
+    // Read GITHUB_TOKEN inside the function, never at module load
+    const token = process.env.GITHUB_TOKEN;
+    const headers: Record<string, string> = {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': 'cicd-pipeline-tracker',
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      // 1. Call GET /repos/{owner}/{repo}/actions/runs/{runId}/jobs
+      const jobsRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/jobs`,
+        {
+          headers,
+          signal: controller.signal,
+        }
+      );
+
+      if (!jobsRes.ok) {
+        return null;
+      }
+
+      const jobsData = (await jobsRes.json()) as {
+        jobs?: Array<{
+          id: number;
+          conclusion: string | null;
+        }>;
+      };
+
+      if (!jobsData.jobs || !Array.isArray(jobsData.jobs)) {
+        return null;
+      }
+
+      // Pick the first job whose conclusion is failure or timed_out
+      const failedJob = jobsData.jobs.find((job) => {
+        const conc = job.conclusion?.toLowerCase();
+        return conc === 'failure' || conc === 'timed_out';
+      });
+
+      if (!failedJob) {
+        return null;
+      }
+
+      // 2. Call GET /repos/{owner}/{repo}/actions/jobs/{jobId}/logs (it redirects, follow it)
+      const logsRes = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/actions/jobs/${failedJob.id}/logs`,
+        {
+          headers,
+          signal: controller.signal,
+          redirect: 'follow',
+        }
+      );
+
+      if (!logsRes.ok) {
+        return null;
+      }
+
+      const rawLogs = await logsRes.text();
+      if (!rawLogs) {
+        return null;
+      }
+
+      const cleaned = cleanJobLog(rawLogs);
+      return cleaned.trim() ? cleaned : null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  } catch {
+    // Return null on any error; never throw
+    return null;
+  }
+}

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { verifyGitHubSignature } from '@/lib/github-verify';
+import { fetchFailedJobLog } from '@/lib/github-api';
 
 // ─── Status mapping & rank helpers ─────────────────────────────────────────────
 // Maps GitHub workflow_run conclusions/statuses to our status enum.
@@ -157,6 +158,22 @@ async function processWebhookEvent(
                 }
             }
 
+            const action = (payload.action as string) || '';
+            const conclusion = ((wr.conclusion as string) || '').toLowerCase();
+
+            let logContent = logSummary;
+
+            if (action === 'completed' && (conclusion === 'failure' || conclusion === 'timed_out')) {
+                let realLog = await fetchFailedJobLog(repoOwner, repoName, runId);
+                if (!realLog) {
+                    await new Promise((resolve) => setTimeout(resolve, 3000));
+                    realLog = await fetchFailedJobLog(repoOwner, repoName, runId);
+                }
+                if (realLog) {
+                    logContent = realLog;
+                }
+            }
+
             const updatedAt = (wr.updated_at as string) || undefined;
             const incomingDate = updatedAt ? new Date(updatedAt) : new Date();
 
@@ -196,13 +213,13 @@ async function processWebhookEvent(
                         branch,
                         environment,
                         status,
-                        logs: logSummary,
+                        logs: logContent,
                         timestamp: incomingDate,
                         repositoryId: repository.id,
                     },
                     update: {
                         deliveryId,
-                        logs: logSummary,
+                        logs: logContent,
                         ...(updateStatus ? { status, timestamp: incomingDate } : {}),
                     },
                 });
