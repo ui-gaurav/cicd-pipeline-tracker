@@ -188,6 +188,7 @@ async function processWebhookEvent(
                     select: {
                         status: true,
                         timestamp: true,
+                        logs: true,
                     },
                 });
 
@@ -197,6 +198,17 @@ async function processWebhookEvent(
                     existing?.timestamp,
                     updatedAt
                 );
+
+                // Treat existing logs as "fetched" (real failure logs) when they do not
+                // start with the summary prefix "Workflow:". Never overwrite fetched logs
+                // with summary text. Only update logs in the update branch when
+                // shouldUpdateStatus is true.
+                const existingLogsAreFetched =
+                    typeof existing?.logs === 'string' &&
+                    !existing.logs.startsWith('Workflow:');
+                const logsUpdate = updateStatus
+                    ? (existingLogsAreFetched ? existing!.logs : logContent)
+                    : undefined;
 
                 await prisma.deployment.upsert({
                     where: {
@@ -219,7 +231,7 @@ async function processWebhookEvent(
                     },
                     update: {
                         deliveryId,
-                        logs: logContent,
+                        ...(logsUpdate !== undefined ? { logs: logsUpdate } : {}),
                         ...(updateStatus ? { status, timestamp: incomingDate } : {}),
                     },
                 });
