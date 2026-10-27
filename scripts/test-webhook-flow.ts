@@ -125,7 +125,8 @@ function workflowRunPayload(
     action: string,
     conclusion: string | null,
     runId: number,
-    updatedAt?: string
+    updatedAt?: string,
+    testLogs?: string
 ): object {
     const statusField = action === 'completed' ? 'completed' : (action === 'in_progress' ? 'in_progress' : 'requested');
     return {
@@ -144,6 +145,7 @@ function workflowRunPayload(
                 author: { name: 'Test User', email: 'test@example.com' },
             },
             actor: { login: 'test-user' },
+            ...(testLogs ? { _test_logs: testLogs } : {}),
         },
         repository: {
             name: FAKE_REPO,
@@ -513,6 +515,97 @@ async function main() {
             } else {
                 fail('11. fetchFailedJobLog null',
                     `row=${JSON.stringify(row)} — expected status=FAILURE within 9s`);
+            }
+        }
+    }
+
+    // ── Case 12 ───────────────────────────────────────────────────────────────
+    console.log('\n-- Case 12: (a) After FAILURE with a fetched log, a later SUCCESS leaves logs as summary text');
+    {
+        const runId12 = 99990012;
+        const FETCHED_MARKER_12 = 'FETCHED-LOG-MARKER-12\nsome real failure output from job\nstack trace line';
+
+        // 1. Send failure with fetched log content
+        const tFailure = new Date(Date.now() - 8000).toISOString();
+        await send('workflow_run', workflowRunPayload('completed', 'failure', runId12, tFailure, FETCHED_MARKER_12));
+        const failureRow = await pollForStatus(fakeRepoId, String(runId12), ['FAILURE'], 10000);
+
+        if (!failureRow || failureRow.logs !== FETCHED_MARKER_12) {
+            fail('12. Case (a): after FAILURE with fetched log, later SUCCESS leaves logs as summary text',
+                `setup failed: row not created with fetched log: ${failureRow?.logs?.slice(0, 40)}`);
+        } else {
+            // 2. Now send a later completed(success) — incoming status is SUCCESS
+            // Rule: when incoming status is SUCCESS, write summary text to logs even if existing logs are fetched
+            const tSuccess = new Date().toISOString();
+            await send('workflow_run', workflowRunPayload('completed', 'success', runId12, tSuccess));
+            await new Promise((r) => setTimeout(r, 1500));
+
+            const row = await prisma.deployment.findUnique({
+                where: { repositoryId_runId: { repositoryId: fakeRepoId, runId: String(runId12) } },
+                select: { status: true, logs: true },
+            });
+
+            const statusOk = row?.status === 'SUCCESS';
+            const logsResetToSummary = typeof row?.logs === 'string' && row.logs.startsWith('Workflow:');
+
+            if (statusOk && logsResetToSummary) {
+                pass('12. Case (a): after FAILURE with a fetched log, a later SUCCESS leaves logs as summary text',
+                    `status=${row!.status} logsStartsWith="${row!.logs!.slice(0, 30)}"`);
+            } else {
+                fail('12. Case (a): after FAILURE with a fetched log, a later SUCCESS leaves logs as summary text',
+                    `status=${row?.status} logsResetOk=${logsResetToSummary} logs="${row?.logs?.slice(0, 60)}"`);
+            }
+        }
+    }
+
+    // ── Case 13 ───────────────────────────────────────────────────────────────
+    console.log('\n-- Case 13: (b) A second failure replaces the older fetched log');
+    {
+        const runId13 = 99990013;
+        const FETCHED_LOG_OLD = 'FETCHED-LOG-MARKER-13-OLD\nfirst failed job log line 1\nline 2';
+        const FETCHED_LOG_NEW = 'FETCHED-LOG-MARKER-13-NEW\nsecond failed job log line 1\nline 2';
+
+        // 1. First failure with older fetched log
+        const tFirst = new Date(Date.now() - 8000).toISOString();
+        await send('workflow_run', workflowRunPayload('completed', 'failure', runId13, tFirst, FETCHED_LOG_OLD));
+        const firstRow = await pollForStatus(fakeRepoId, String(runId13), ['FAILURE'], 10000);
+
+        if (!firstRow || firstRow.logs !== FETCHED_LOG_OLD) {
+            fail('13. Case (b): a second failure replaces the older fetched log',
+                `setup failed: first failure row not created with FETCHED_LOG_OLD: ${firstRow?.logs?.slice(0, 40)}`);
+        } else {
+            // 2. Second failure with new fetched log and newer timestamp
+            // Rule: When incoming status is a failure and incoming log content is itself fetched,
+            // write it, replacing an older fetched log.
+            const tSecond = new Date().toISOString();
+            await send('workflow_run', workflowRunPayload('completed', 'failure', runId13, tSecond, FETCHED_LOG_NEW));
+            await new Promise((r) => setTimeout(r, 1500));
+
+            const secondRow = await prisma.deployment.findUnique({
+                where: { repositoryId_runId: { repositoryId: fakeRepoId, runId: String(runId13) } },
+                select: { status: true, logs: true },
+            });
+
+            const statusOk = secondRow?.status === 'FAILURE';
+            const logReplaced = secondRow?.logs === FETCHED_LOG_NEW;
+
+            // 3. Stale event (non-terminal / older timestamp) must not overwrite the new fetched log
+            const tStale = new Date(Date.now() - 20000).toISOString();
+            await send('workflow_run', workflowRunPayload('in_progress', null, runId13, tStale));
+            await new Promise((r) => setTimeout(r, 1000));
+
+            const staleCheckRow = await prisma.deployment.findUnique({
+                where: { repositoryId_runId: { repositoryId: fakeRepoId, runId: String(runId13) } },
+                select: { status: true, logs: true },
+            });
+            const preservedAfterStale = staleCheckRow?.logs === FETCHED_LOG_NEW;
+
+            if (statusOk && logReplaced && preservedAfterStale) {
+                pass('13. Case (b): a second failure replaces the older fetched log',
+                    `status=${secondRow!.status} replacedOk=${logReplaced} preservedAfterStale=${preservedAfterStale}`);
+            } else {
+                fail('13. Case (b): a second failure replaces the older fetched log',
+                    `status=${secondRow?.status} logReplaced=${logReplaced} preservedAfterStale=${preservedAfterStale} logs="${secondRow?.logs?.slice(0, 60)}"`);
             }
         }
     }

@@ -7,23 +7,26 @@ const { auth } = NextAuth(authConfig);
 export default auth((req) => {
   const { pathname } = req.nextUrl;
 
-  // Never protect the GitHub webhook, login page, or auth endpoints.
-  // (The matcher below already skips them; this is a safety net in case it changes.)
+  // Never protect the GitHub webhook or auth endpoints.
   if (
     pathname.startsWith('/api/webhooks/github') ||
-    pathname.startsWith('/api/auth') ||
-    pathname === '/login'
+    pathname.startsWith('/api/auth')
   ) {
     return NextResponse.next();
+  }
+
+  // /login is an alias — redirect to / which hosts the login form
+  if (pathname === '/login') {
+    return NextResponse.redirect(new URL('/', req.nextUrl.origin));
   }
 
   const isLoggedIn = !!req.auth;
   const role = req.auth?.user?.role;
 
-  // Dashboard pages: unauthenticated users go to /login
+  // Dashboard pages: unauthenticated users go to /
   if (pathname.startsWith('/dashboard')) {
     if (!isLoggedIn) {
-      const loginUrl = new URL('/login', req.nextUrl.origin);
+      const loginUrl = new URL('/', req.nextUrl.origin);
       loginUrl.searchParams.set('callbackUrl', pathname);
       return NextResponse.redirect(loginUrl);
     }
@@ -65,6 +68,7 @@ export default auth((req) => {
 
 export const config = {
   matcher: [
+    '/login',
     '/dashboard/:path*',
     '/api/admin/:path*',
     '/api/repos/:path*',
