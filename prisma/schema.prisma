@@ -27,12 +27,13 @@ model User {
 }
 
 model Repository {
-  id          String       @id @default(uuid())
-  name        String
-  owner       String
-  deployments Deployment[]
-  stats       RepoStats?
-  createdAt   DateTime     @default(now())
+  id              String       @id @default(uuid())
+  name            String
+  owner           String
+  lastRefreshedAt DateTime?
+  deployments     Deployment[]
+  stats           RepoStats?
+  createdAt       DateTime     @default(now())
 
   @@unique([owner, name])
 }

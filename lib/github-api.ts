@@ -1,4 +1,47 @@
 import 'server-only';
+import type { WorkflowRunLike } from '@/lib/deployments-sync';
+
+export class GitHubApiError extends Error {
+  constructor(message: string, public status?: number) {
+    super(message);
+    this.name = 'GitHubApiError';
+  }
+}
+
+export class GitHubNotFoundError extends GitHubApiError {
+  constructor(message = 'Repository not found on GitHub') {
+    super(message, 404);
+    this.name = 'GitHubNotFoundError';
+  }
+}
+
+export class GitHubForbiddenError extends GitHubApiError {
+  constructor(message = 'Access forbidden to GitHub repository') {
+    super(message, 403);
+    this.name = 'GitHubForbiddenError';
+  }
+}
+
+export class GitHubRateLimitError extends GitHubApiError {
+  constructor(message = 'GitHub API rate limit exceeded', public retryAfter?: number) {
+    super(message, 429);
+    this.name = 'GitHubRateLimitError';
+  }
+}
+
+export class GitHubNetworkError extends GitHubApiError {
+  constructor(message = 'GitHub API network error') {
+    super(message);
+    this.name = 'GitHubNetworkError';
+  }
+}
+
+export interface RepoInfo {
+  private: boolean;
+  archived: boolean;
+  disabled: boolean;
+  full_name: string;
+}
 
 export interface GitHubRepoStats {
   stars: number;
@@ -14,6 +57,168 @@ export interface FailureDetails {
   annotations: string[];
   reasonLines: string[];
   logTail: string;
+}
+
+/**
+ * Fetches repository info: private, archived, disabled, full_name
+ * GET /repos/{owner}/{repo}
+ */
+export async function getRepoInfo(
+  owner: string,
+  repo: string,
+  fetchImpl: typeof fetch = fetch
+): Promise<RepoInfo> {
+  const token = process.env.GITHUB_TOKEN;
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'cicd-pipeline-tracker',
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+  let res: Response;
+  try {
+    res = await fetchImpl(url, {
+      headers,
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new GitHubNetworkError('GitHub API request timed out after 10 seconds');
+    }
+    throw new GitHubNetworkError(
+      `GitHub API network error: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  if (res.status === 404) {
+    throw new GitHubNotFoundError();
+  }
+  if (res.status === 429) {
+    throw new GitHubRateLimitError();
+  }
+  if (res.status === 403) {
+    const rateLimitRemaining = res.headers.get('x-ratelimit-remaining');
+    if (rateLimitRemaining === '0') {
+      throw new GitHubRateLimitError();
+    }
+    throw new GitHubForbiddenError();
+  }
+  if (!res.ok) {
+    throw new GitHubApiError(`GitHub API error: HTTP ${res.status}`, res.status);
+  }
+
+  let data: Record<string, unknown>;
+  try {
+    data = (await res.json()) as Record<string, unknown>;
+  } catch {
+    throw new GitHubNetworkError('Failed to parse GitHub API JSON response');
+  }
+
+  return {
+    private: Boolean(data.private),
+    archived: Boolean(data.archived),
+    disabled: Boolean(data.disabled),
+    full_name: (data.full_name as string) || `${owner}/${repo}`,
+  };
+}
+
+/**
+ * Lists recent workflow runs for a repository:
+ * GET /repos/{owner}/{repo}/actions/runs?per_page={limit}
+ * Maps each run to the shape consumed by the webhook / upsertRun handler.
+ */
+export async function listRecentRuns(
+  owner: string,
+  repo: string,
+  limit = 20,
+  fetchImpl: typeof fetch = fetch
+): Promise<WorkflowRunLike[]> {
+  const token = process.env.GITHUB_TOKEN;
+  const headers: Record<string, string> = {
+    Accept: 'application/vnd.github+json',
+    'User-Agent': 'cicd-pipeline-tracker',
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/actions/runs?per_page=${limit}`;
+  let res: Response;
+  try {
+    res = await fetchImpl(url, {
+      headers,
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (err: unknown) {
+    if (err instanceof Error && err.name === 'TimeoutError') {
+      throw new GitHubNetworkError('GitHub API request timed out after 10 seconds');
+    }
+    throw new GitHubNetworkError(
+      `GitHub API network error: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  if (res.status === 404) {
+    throw new GitHubNotFoundError();
+  }
+  if (res.status === 429) {
+    throw new GitHubRateLimitError();
+  }
+  if (res.status === 403) {
+    const rateLimitRemaining = res.headers.get('x-ratelimit-remaining');
+    if (rateLimitRemaining === '0') {
+      throw new GitHubRateLimitError();
+    }
+    throw new GitHubForbiddenError();
+  }
+  if (!res.ok) {
+    throw new GitHubApiError(`GitHub API error: HTTP ${res.status}`, res.status);
+  }
+
+  let data: { workflow_runs?: Array<Record<string, unknown>> };
+  try {
+    data = (await res.json()) as { workflow_runs?: Array<Record<string, unknown>> };
+  } catch {
+    throw new GitHubNetworkError('Failed to parse GitHub API JSON response');
+  }
+
+  const runs = data.workflow_runs || [];
+
+  return runs.map((run) => {
+    const headCommit = run.head_commit as Record<string, unknown> | undefined;
+    const author = headCommit?.author as Record<string, unknown> | undefined;
+    const actor = run.actor as Record<string, unknown> | undefined;
+
+    return {
+      id: run.id as string | number,
+      name: (run.name as string) ?? 'CI',
+      head_branch: (run.head_branch as string) ?? 'main',
+      head_sha: (run.head_sha as string) ?? 'unknown',
+      status: (run.status as string) ?? null,
+      conclusion: (run.conclusion as string) ?? null,
+      updated_at: (run.updated_at as string) ?? null,
+      html_url: (run.html_url as string) ?? null,
+      head_commit: headCommit
+        ? {
+            message: headCommit.message as string | undefined,
+            author: author
+              ? {
+                  name: author.name as string | undefined,
+                  email: author.email as string | undefined,
+                }
+              : undefined,
+          }
+        : undefined,
+      actor: actor
+        ? {
+            login: actor.login as string | undefined,
+          }
+        : undefined,
+    };
+  });
 }
 
 function parseLastPage(linkHeader: string | null): number | null {

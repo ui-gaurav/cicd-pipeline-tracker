@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Link from 'next/link';
 import useSWR from 'swr';
 import StatusBadge from './StatusBadge';
@@ -44,6 +44,33 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
 
   const repo = data || initialData;
   const isAdmin = userRole === 'ADMIN';
+
+  const hasRefreshedRef = useRef(false);
+
+  useEffect(() => {
+    if (hasRefreshedRef.current) return;
+    hasRefreshedRef.current = true;
+
+    const runs = repo.recentRuns || [];
+    const newestRun = runs[0];
+    const isOlderThan5Min =
+      !newestRun ||
+      isNaN(new Date(newestRun.timestamp).getTime()) ||
+      Date.now() - new Date(newestRun.timestamp).getTime() > 5 * 60 * 1000;
+
+    if (isOlderThan5Min) {
+      fetch(`/api/repos/${repo.repository.id}/refresh`, { method: 'POST' })
+        .then((res) => {
+          if (res.ok) {
+            mutate();
+          }
+          // ignore 429 and errors silently
+        })
+        .catch(() => {
+          // ignore silently
+        });
+    }
+  }, [repo.repository.id, repo.recentRuns, mutate]);
 
   const handleSync = async () => {
     setIsSyncing(true);

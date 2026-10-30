@@ -44,12 +44,13 @@ export default auth((req) => {
     return NextResponse.next();
   }
 
-  // Repos API: any logged-in user can read (GET), only ADMIN can write
+  // Repos API: any logged-in user can read (GET) and call refresh (POST /api/repos/:id/refresh), only ADMIN can write
   if (pathname.startsWith('/api/repos')) {
     if (!isLoggedIn) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    if (req.method !== 'GET' && role !== 'ADMIN') {
+    const isRefresh = req.method === 'POST' && /\/api\/repos\/[^/]+\/refresh\/?$/.test(pathname);
+    if (req.method !== 'GET' && !isRefresh && role !== 'ADMIN') {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
     return NextResponse.next();

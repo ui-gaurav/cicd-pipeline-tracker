@@ -1,94 +1,11 @@
 import { NextRequest, NextResponse, after } from 'next/server';
-import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { verifyGitHubSignature } from '@/lib/github-verify';
 import { fetchFailureDetails, sanitizeLogLines } from '@/lib/github-api';
 import { formatFailureLog, parseFailureLog } from '@/lib/failure-log';
+import { upsertRun, truncateLogs, buildSummary, WorkflowRunLike } from '@/lib/deployments-sync';
 
 export const maxDuration = 60;
-
-// ─── Status mapping & rank helpers ─────────────────────────────────────────────
-// Maps GitHub workflow_run conclusions/statuses to our status enum.
-function mapStatus(githubStatus: string | null | undefined): string {
-    const s = (githubStatus ?? '').toLowerCase();
-    if (s === 'queued' || s === 'in_progress' || s === 'waiting' || s === 'requested' || s === 'pending') {
-        return 'PENDING';
-    }
-    if (s === 'success' || s === 'completed') {
-        return 'SUCCESS';
-    }
-    if (s === 'failure' || s === 'timed_out' || s === 'cancelled' || s === 'action_required' || s === 'stale') {
-        return 'FAILURE';
-    }
-    return 'PENDING';
-}
-
-function deriveStatus(status: string | null | undefined, conclusion: string | null | undefined): string {
-    if (conclusion) return mapStatus(conclusion);
-    return mapStatus(status);
-}
-
-function statusRank(status: string): number {
-    const s = status.toUpperCase();
-    if (s === 'PENDING' || s === 'QUEUED' || s === 'WAITING' || s === 'REQUESTED') return 1;
-    if (s === 'RUNNING' || s === 'IN_PROGRESS') return 2;
-    if (s === 'SUCCESS' || s === 'FAILURE' || s === 'FAILED' || s === 'CANCELLED' || s === 'TIMED_OUT') return 3;
-    return 0;
-}
-
-function isTerminalStatus(status: string): boolean {
-    const s = status.toUpperCase();
-    return s === 'SUCCESS' || s === 'FAILURE' || s === 'FAILED' || s === 'CANCELLED' || s === 'TIMED_OUT';
-}
-
-function shouldUpdateStatus(
-    existingStatus: string | null | undefined,
-    incomingStatus: string,
-    existingTimestamp?: Date | null,
-    incomingUpdatedAt?: string | null
-): boolean {
-    if (!existingStatus) return true;
-
-    const existingTerminal = isTerminalStatus(existingStatus);
-    const incomingRank = statusRank(incomingStatus);
-    const existingRank = statusRank(existingStatus);
-
-    // Rule 1: Never overwrite a terminal status with PENDING or RUNNING
-    if (existingTerminal && (incomingStatus === 'PENDING' || incomingStatus === 'RUNNING')) {
-        return false;
-    }
-
-    // Rule 2: If timestamp comparison is available and incoming is older, don't overwrite
-    if (existingTimestamp && incomingUpdatedAt) {
-        const incomingTime = new Date(incomingUpdatedAt).getTime();
-        const existingTime = existingTimestamp.getTime();
-        if (!isNaN(incomingTime) && !isNaN(existingTime) && incomingTime < existingTime) {
-            return false;
-        }
-    }
-
-    // Rule 3: Never move backwards by rank (PENDING < RUNNING < SUCCESS/FAILED)
-    if (incomingRank < existingRank) {
-        return false;
-    }
-
-    return true;
-}
-
-// ─── Log helpers ────────────────────────────────────────────────────────────────
-function truncateLogs(logs: string | null | undefined, maxLines = 150): string | null {
-    if (!logs) return null;
-    const lines = logs.split(/\r?\n/);
-    if (lines.length <= maxLines) return logs;
-    return lines.slice(-maxLines).join('\n');
-}
-
-function buildSummary(fields: Record<string, string | null | undefined>): string {
-    return Object.entries(fields)
-        .filter(([, v]) => v != null && v !== '')
-        .map(([k, v]) => `${k}: ${v}`)
-        .join('\n');
-}
 
 // ─── Repository upsert helper ───────────────────────────────────────────────────
 async function upsertRepo(owner: string, name: string) {
@@ -124,47 +41,14 @@ async function processWebhookEvent(
                 console.warn(`[webhook] Missing workflow_run.id (delivery: ${deliveryId ?? 'unknown'}), skipping event`);
                 return;
             }
-            const runId = String(wr.id);
-
-            const branch = (wr.head_branch as string) || '';
-            const environment = branch === 'main' ? 'PRODUCTION' : 'STAGING';
-            const status = deriveStatus(wr.status as string, wr.conclusion as string);
-
-            const headCommit = wr.head_commit as Record<string, unknown> | undefined;
-            const commitSha = (wr.head_sha as string) || 'unknown';
-            const commitAuthor =
-                (headCommit?.author as Record<string, unknown> | undefined)?.name as string
-                ?? (wr.actor as Record<string, unknown> | undefined)?.login as string
-                ?? 'Unknown';
-
-            const logSummary = truncateLogs(
-                buildSummary({
-                    Workflow: wr.name as string,
-                    Branch: branch,
-                    Conclusion: wr.conclusion as string,
-                    Status: wr.status as string,
-                    URL: wr.html_url as string,
-                    Commit: commitSha,
-                })
-            );
 
             const repository = await upsertRepo(repoOwner, repoName);
 
-            // Idempotency: if this exact delivery was already processed, skip.
-            if (deliveryId) {
-                const existingDelivery = await prisma.deployment.findUnique({
-                    where: { deliveryId },
-                    select: { id: true },
-                });
-                if (existingDelivery) {
-                    return;
-                }
-            }
-
             const action = (payload.action as string) || '';
             const conclusion = ((wr.conclusion as string) || '').toLowerCase();
+            const runId = String(wr.id);
 
-            let logContent = logSummary;
+            let logContent: string | undefined;
 
             if (action === 'completed' && (conclusion === 'failure' || conclusion === 'timed_out')) {
                 if (process.env.NODE_ENV !== 'production' && typeof (wr as Record<string, unknown>)._test_logs === 'string') {
@@ -226,99 +110,10 @@ async function processWebhookEvent(
                 }
             }
 
-            const updatedAt = (wr.updated_at as string) || undefined;
-            const incomingDate = updatedAt ? new Date(updatedAt) : new Date();
-
-            const doUpsert = async () => {
-                const existing = await prisma.deployment.findUnique({
-                    where: {
-                        repositoryId_runId: {
-                            repositoryId: repository.id,
-                            runId,
-                        },
-                    },
-                    select: {
-                        status: true,
-                        timestamp: true,
-                        logs: true,
-                    },
-                });
-
-                const updateStatus = shouldUpdateStatus(
-                    existing?.status,
-                    status,
-                    existing?.timestamp,
-                    updatedAt
-                );
-
-                // Log-overwrite rules:
-                //   • Never overwrite logs on stale or non-terminal events.
-                //   • SUCCESS always writes summary text even if existing logs were fetched failure logs.
-                //   • Failure with fetched incoming log content (does not start with "Workflow:")
-                //     writes it, replacing an older fetched log.
-                //   • Otherwise keep existing fetched failure logs (never clobber with summary).
-                const isTerminal = isTerminalStatus(status);
-                const isFailure = status === 'FAILURE' || status === 'FAILED' || status === 'CANCELLED' || status === 'TIMED_OUT';
-                const existingLogsAreFetched =
-                    typeof existing?.logs === 'string' &&
-                    !existing.logs.startsWith('Workflow:');
-                const incomingLogIsFetched =
-                    typeof logContent === 'string' &&
-                    !logContent.startsWith('Workflow:');
-
-                let logsUpdate: string | null | undefined;
-                if (!updateStatus || !isTerminal) {
-                    logsUpdate = undefined; // stale or non-terminal — never touch logs
-                } else if (status === 'SUCCESS') {
-                    logsUpdate = logSummary; // SUCCESS always writes summary text
-                } else if (isFailure && incomingLogIsFetched) {
-                    logsUpdate = logContent; // failure with fetched log replaces older fetched log
-                } else if (existingLogsAreFetched) {
-                    logsUpdate = undefined; // keep existing fetched log, never overwrite with summary
-                } else {
-                    logsUpdate = logContent; // write incoming summary
-                }
-
-                await prisma.deployment.upsert({
-                    where: {
-                        repositoryId_runId: {
-                            repositoryId: repository.id,
-                            runId,
-                        },
-                    },
-                    create: {
-                        deliveryId,
-                        runId,
-                        commitSha,
-                        commitAuthor,
-                        branch,
-                        environment,
-                        status,
-                        logs: logContent,
-                        timestamp: incomingDate,
-                        repositoryId: repository.id,
-                    },
-                    update: {
-                        deliveryId,
-                        ...(logsUpdate !== undefined ? { logs: logsUpdate } : {}),
-                        ...(updateStatus ? { status, timestamp: incomingDate } : {}),
-                    },
-                });
-            };
-
-            try {
-                await doUpsert();
-            } catch (err: unknown) {
-                if (
-                    err instanceof Prisma.PrismaClientKnownRequestError &&
-                    err.code === 'P2002'
-                ) {
-                    // Retry once on P2002 unique constraint race condition
-                    await doUpsert();
-                } else {
-                    throw err;
-                }
-            }
+            await upsertRun(repository.id, wr as unknown as WorkflowRunLike, {
+                deliveryId,
+                logs: logContent,
+            });
             break;
         }
 

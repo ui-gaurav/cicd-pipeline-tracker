@@ -5,6 +5,7 @@ import useSWR from 'swr';
 import EnvironmentTabs, { EnvironmentTab } from './EnvironmentTabs';
 import RepoCard from './RepoCard';
 import FailureLogPanel from './FailureLogPanel';
+import { parseAndValidateRepoInput } from '@/lib/repo-validation';
 import type { RepositoryDeployments, DeploymentItem } from '@/types/deployments';
 
 interface DashboardClientProps {
@@ -53,6 +54,12 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
   const [activeFailureLog, setActiveFailureLog] = useState<{ id: string; repoName: string } | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number>(10);
   const [flashedCards, setFlashedCards] = useState<Set<string>>(new Set());
+
+  // Add Repository form state (ADMIN only)
+  const [repoInput, setRepoInput] = useState('');
+  const [isAdding, setIsAdding] = useState(false);
+  const [addRepoError, setAddRepoError] = useState<string | null>(null);
+  const [addRepoSuccess, setAddRepoSuccess] = useState<string | null>(null);
 
   // Initialize with initialData so first load never flashes
   const prevCardsRef = useRef<Map<string, { status: string; runId: string }>>(
@@ -162,6 +169,70 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
 
   const isAdmin = userRole === 'ADMIN';
 
+  const handleAddRepo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAddRepoError(null);
+    setAddRepoSuccess(null);
+
+    const validation = parseAndValidateRepoInput(repoInput);
+    if (!validation.valid || !validation.owner || !validation.repo) {
+      setAddRepoError(validation.error || 'Invalid repository format (expected owner/repo)');
+      return;
+    }
+
+    setIsAdding(true);
+    try {
+      const res = await fetch('/api/repos', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          owner: validation.owner,
+          repo: validation.repo,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const errorText = data.error || '';
+        if (
+          res.status === 404 ||
+          res.status === 502 ||
+          errorText.includes('not accessible') ||
+          errorText.includes('not found')
+        ) {
+          setAddRepoError('Repository not found or not accessible');
+        } else if (
+          errorText.includes('Private') ||
+          errorText.includes('private')
+        ) {
+          setAddRepoError("Private repositories can't be tracked");
+        } else if (
+          res.status === 429 ||
+          errorText.includes('Rate limited') ||
+          errorText.includes('rate limit')
+        ) {
+          setAddRepoError('Rate limited, try again later');
+        } else if (errorText.includes('limit reached')) {
+          setAddRepoError('Repository limit reached');
+        } else {
+          setAddRepoError(errorText || 'Failed to add repository');
+        }
+        return;
+      }
+
+      setRepoInput('');
+      setAddRepoSuccess(`Repository ${validation.owner}/${validation.repo} added.`);
+      await mutate();
+    } catch {
+      setAddRepoError('Repository not found or not accessible');
+    } finally {
+      setIsAdding(false);
+    }
+  };
+
   return (
     <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6">
       {/* Top Header / Action Toolbar */}
@@ -205,6 +276,52 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
           />
         </div>
       </div>
+
+      {/* Add Repository Form (ADMIN only) */}
+      {isAdmin && (
+        <div className="mb-6 p-4 border border-[var(--border)] bg-[var(--card)] rounded-[var(--radius)]">
+          <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-2 mb-3">
+            <h2 className="text-xs font-mono uppercase tracking-[0.08em] font-bold text-[var(--foreground)]">
+              Add repository
+            </h2>
+            <p className="text-[11px] font-mono text-[var(--muted-foreground)]">
+              Added repositories update on refresh and need a webhook for real-time updates.
+            </p>
+          </div>
+          <form onSubmit={handleAddRepo} className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="text"
+              value={repoInput}
+              onChange={(e) => {
+                setRepoInput(e.target.value);
+                if (addRepoError) setAddRepoError(null);
+                if (addRepoSuccess) setAddRepoSuccess(null);
+              }}
+              placeholder="owner/repo"
+              disabled={isAdding}
+              aria-label="Repository owner/repo"
+              className="flex-1 px-3 py-1.5 text-xs font-mono border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] rounded-[var(--radius)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)] disabled:opacity-50"
+            />
+            <button
+              type="submit"
+              disabled={isAdding || !repoInput.trim()}
+              className="px-4 py-1.5 text-xs font-mono uppercase tracking-[0.08em] border border-[var(--border)] bg-[var(--primary)] text-[var(--primary-foreground)] rounded-[var(--radius)] hover:opacity-90 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed transition-opacity"
+            >
+              {isAdding ? 'Adding...' : 'Add repository'}
+            </button>
+          </form>
+          {addRepoError && (
+            <p className="mt-2 text-xs font-mono text-[var(--destructive)]">
+              {addRepoError}
+            </p>
+          )}
+          {addRepoSuccess && (
+            <p className="mt-2 text-xs font-mono text-[var(--status-pass)]">
+              {addRepoSuccess}
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Error state */}
       {error && (

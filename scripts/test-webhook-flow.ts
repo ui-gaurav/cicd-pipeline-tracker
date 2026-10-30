@@ -211,12 +211,15 @@ function fail(name: string, details: string) {
 async function main() {
     const ghApi = await import('../lib/github-api');
     fetchFailureDetails = ghApi.fetchFailureDetails;
+    const { validateRepoOwnerAndName } = await import('../lib/repo-validation');
+    const { handleAddRepository } = await import('../app/api/repos/route');
+    const { handleRefreshRepo } = await import('../app/api/repos/[repo]/refresh/route');
 
     console.log('\n=== Webhook Behavior Tests ===\n');
 
     // Count rows for other repos before we start
     const reposBefore = await prisma.repository.findMany({
-        where: { NOT: { owner: FAKE_OWNER } },
+        where: { NOT: { owner: { in: [FAKE_OWNER, 'test-fake-owner'] } } },
         select: { id: true },
     });
     const otherRepoIds = reposBefore.map((r) => r.id);
@@ -955,6 +958,233 @@ async function main() {
         }
     }
 
+    // ── Case 25: Validation helper ───────────────────────────────────────────
+    console.log('\n-- Case 25: Validation rejects invalid names');
+    {
+        const r1 = validateRepoOwnerAndName('test-owner', '.');
+        const r2 = validateRepoOwnerAndName('test-owner', '..');
+        const r3 = validateRepoOwnerAndName('test-owner', 'a/b');
+        const r4 = validateRepoOwnerAndName('test-owner', 'my-repo.git');
+        const r5 = validateRepoOwnerAndName('a'.repeat(40), 'my-repo'); // overlong owner (>39)
+        const r6 = validateRepoOwnerAndName('test-owner', 'b'.repeat(101)); // overlong repo (>100)
+        const rOk = validateRepoOwnerAndName('valid-owner-123', 'valid_repo.name-1');
+
+        if (
+            !r1.valid &&
+            !r2.valid &&
+            !r3.valid &&
+            !r4.valid &&
+            !r5.valid &&
+            !r6.valid &&
+            rOk.valid
+        ) {
+            pass('25. Validation rejects invalid names', 'rejected ., .., a/b, .git, and overlong names; accepted valid');
+        } else {
+            fail('25. Validation rejects invalid names', `r1=${r1.valid} r2=${r2.valid} r3=${r3.valid} r4=${r4.valid} r5=${r5.valid} r6=${r6.valid} rOk=${rOk.valid}`);
+        }
+    }
+
+    // ── Case 26: Viewer gets 403 on POST /api/repos ───────────────────────────
+    console.log('\n-- Case 26: Viewer gets 403 on POST /api/repos');
+    {
+        const res = await handleAddRepository(
+            { owner: 'test-fake-owner', repo: 'viewer-test-repo' },
+            { userRole: 'VIEWER' }
+        );
+        if (res.status === 403) {
+            pass('26. Viewer gets 403 on POST /api/repos', 'status=403');
+        } else {
+            fail('26. Viewer gets 403 on POST /api/repos', `got status=${res.status}`);
+        }
+    }
+
+    // ── Case 27: Private repo is refused ─────────────────────────────────────
+    console.log('\n-- Case 27: Private repo is refused');
+    {
+        const stubFetch: typeof fetch = async (url: string | URL | Request) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('/repos/test-fake-owner/private-repo')) {
+                return new Response(JSON.stringify({
+                    private: true,
+                    archived: false,
+                    disabled: false,
+                    full_name: 'test-fake-owner/private-repo',
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            return new Response('Not found', { status: 404 });
+        };
+
+        const res = await handleAddRepository(
+            { owner: 'test-fake-owner', repo: 'private-repo' },
+            { userRole: 'ADMIN', fetchImpl: stubFetch }
+        );
+
+        if (res.status === 400 && res.body.error === "Private repositories can't be tracked") {
+            pass('27. Private repo is refused', 'status=400 error="Private repositories can\'t be tracked"');
+        } else {
+            fail('27. Private repo is refused', `status=${res.status} error=${JSON.stringify(res.body)}`);
+        }
+    }
+
+    // ── Case 28: Adding same repo twice gives one row ────────────────────────
+    console.log('\n-- Case 28: Adding the same repo twice gives one row');
+    {
+        const stubFetch: typeof fetch = async (url: string | URL | Request) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('/actions/runs')) {
+                return new Response(JSON.stringify({ workflow_runs: [] }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            return new Response(JSON.stringify({
+                private: false,
+                archived: false,
+                disabled: false,
+                full_name: 'test-fake-owner/dup-test-repo',
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        };
+
+        const res1 = await handleAddRepository(
+            { owner: 'test-fake-owner', repo: 'dup-test-repo' },
+            { userRole: 'ADMIN', fetchImpl: stubFetch }
+        );
+        const res2 = await handleAddRepository(
+            { owner: 'test-fake-owner', repo: 'dup-test-repo' },
+            { userRole: 'ADMIN', fetchImpl: stubFetch }
+        );
+
+        const count = await prisma.repository.count({
+            where: { owner: 'test-fake-owner', name: 'dup-test-repo' },
+        });
+
+        if (res1.status === 200 && res2.status === 200 && count === 1) {
+            pass('28. Adding the same repo twice gives one row', `count=${count} res1=${res1.status} res2=${res2.status}`);
+        } else {
+            fail('28. Adding the same repo twice gives one row', `count=${count} res1=${res1.status} res2=${res2.status}`);
+        }
+    }
+
+    // ── Case 29: 21st repository is refused ──────────────────────────────────
+    console.log('\n-- Case 29: 21st repository is refused');
+    {
+        const currentCount = await prisma.repository.count();
+        const needed = 20 - currentCount;
+        const dummyNames: string[] = [];
+
+        for (let i = 0; i < needed; i++) {
+            const dummyName = `dummy-repo-${i}-${Date.now()}`;
+            dummyNames.push(dummyName);
+            await prisma.repository.create({
+                data: {
+                    owner: 'test-fake-owner',
+                    name: dummyName,
+                },
+            });
+        }
+
+        const stubFetch: typeof fetch = async () => {
+            return new Response(JSON.stringify({
+                private: false,
+                archived: false,
+                disabled: false,
+                full_name: 'test-fake-owner/overflow-repo',
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        };
+
+        const res = await handleAddRepository(
+            { owner: 'test-fake-owner', repo: 'overflow-repo' },
+            { userRole: 'ADMIN', fetchImpl: stubFetch }
+        );
+
+        if (dummyNames.length > 0) {
+            await prisma.repository.deleteMany({
+                where: { owner: 'test-fake-owner', name: { in: dummyNames } },
+            });
+        }
+
+        if (res.status === 400 && res.body.error === 'Repository limit reached') {
+            pass('29. The 21st repository is refused', 'status=400 error="Repository limit reached"');
+        } else {
+            fail('29. The 21st repository is refused', `status=${res.status} error=${JSON.stringify(res.body)}`);
+        }
+    }
+
+    // ── Case 30: Backfilled runs produce one row per run id ─────────────────
+    console.log('\n-- Case 30: Backfilled runs produce one row per run id');
+    {
+        const runIds = [88880001, 88880002, 88880003];
+        const stubFetch: typeof fetch = async (url: string | URL | Request) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('/actions/runs')) {
+                return new Response(JSON.stringify({
+                    workflow_runs: runIds.map((id) => ({
+                        id,
+                        name: 'CI',
+                        head_branch: 'main',
+                        head_sha: 'sha-' + id,
+                        status: 'completed',
+                        conclusion: 'success',
+                        updated_at: new Date().toISOString(),
+                        html_url: `https://github.com/test-fake-owner/backfill-repo/actions/runs/${id}`,
+                    })),
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            return new Response(JSON.stringify({
+                private: false,
+                archived: false,
+                disabled: false,
+                full_name: 'test-fake-owner/backfill-repo',
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        };
+
+        const res = await handleAddRepository(
+            { owner: 'test-fake-owner', repo: 'backfill-repo' },
+            { userRole: 'ADMIN', fetchImpl: stubFetch }
+        );
+
+        const repoId = res.body.repository?.id;
+        const rows = await prisma.deployment.findMany({
+            where: { repositoryId: repoId, runId: { in: runIds.map(String) } },
+        });
+
+        if (res.status === 200 && res.body.importedRuns === 3 && rows.length === 3) {
+            pass('30. Backfilled runs produce one row per run id', `importedRuns=3 rows=${rows.length}`);
+        } else {
+            fail('30. Backfilled runs produce one row per run id', `status=${res.status} imported=${res.body.importedRuns} rows=${rows.length}`);
+        }
+    }
+
+    // ── Case 31: Refresh twice within 60 seconds returns 429 ────────────────
+    console.log('\n-- Case 31: Refresh twice within 60 seconds returns 429');
+    {
+        const repo = await prisma.repository.upsert({
+            where: { owner_name: { owner: 'test-fake-owner', name: 'refresh-test-repo' } },
+            update: { lastRefreshedAt: new Date(Date.now() - 120_000) },
+            create: { owner: 'test-fake-owner', name: 'refresh-test-repo', lastRefreshedAt: new Date(Date.now() - 120_000) },
+        });
+
+        const stubFetch: typeof fetch = async (url: string | URL | Request) => {
+            const urlStr = url.toString();
+            if (urlStr.includes('/actions/runs')) {
+                return new Response(JSON.stringify({ workflow_runs: [] }), {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                });
+            }
+            return new Response('Not found', { status: 404 });
+        };
+
+        const res1 = await handleRefreshRepo(repo.id, { isLoggedIn: true, fetchImpl: stubFetch });
+        const res2 = await handleRefreshRepo(repo.id, { isLoggedIn: true, fetchImpl: stubFetch });
+
+        if (res1.status === 200 && res2.status === 429 && res2.headers?.['Retry-After']) {
+            pass('31. Refresh twice within 60 seconds returns 429', `res1=${res1.status} res2=${res2.status} retryAfter=${res2.headers['Retry-After']}`);
+        } else {
+            fail('31. Refresh twice within 60 seconds returns 429', `res1=${res1.status} res2=${res2.status} headers=${JSON.stringify(res2.headers)}`);
+        }
+    }
+
     // ── Summary ───────────────────────────────────────────────────────────────
     console.log('\n\n=== RESULTS ===');
     for (const r of results) {
@@ -965,12 +1195,12 @@ async function main() {
     // ── Cleanup ───────────────────────────────────────────────────────────────
     console.log('\n=== Cleanup ===');
     const deletedDeps = await prisma.deployment.deleteMany({
-        where: { repository: { owner: FAKE_OWNER, name: FAKE_REPO } },
+        where: { repository: { owner: { in: [FAKE_OWNER, 'test-fake-owner'] } } },
     });
     const deletedRepo = await prisma.repository.deleteMany({
-        where: { owner: FAKE_OWNER, name: FAKE_REPO },
+        where: { owner: { in: [FAKE_OWNER, 'test-fake-owner'] } },
     });
-    console.log(`Deleted ${deletedDeps.count} deployment(s) and ${deletedRepo.count} repo record(s) for ${FAKE_OWNER}/${FAKE_REPO}`);
+    console.log(`Deleted ${deletedDeps.count} deployment(s) and ${deletedRepo.count} repo record(s) for test owners`);
 
     // Verify other repos unchanged
     if (otherRepoIds.length > 0) {
