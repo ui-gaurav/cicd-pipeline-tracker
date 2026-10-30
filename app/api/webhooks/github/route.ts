@@ -2,7 +2,10 @@ import { NextRequest, NextResponse, after } from 'next/server';
 import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { verifyGitHubSignature } from '@/lib/github-verify';
-import { fetchFailedJobLog } from '@/lib/github-api';
+import { fetchFailureDetails, sanitizeLogLines } from '@/lib/github-api';
+import { formatFailureLog, parseFailureLog } from '@/lib/failure-log';
+
+export const maxDuration = 60;
 
 // ─── Status mapping & rank helpers ─────────────────────────────────────────────
 // Maps GitHub workflow_run conclusions/statuses to our status enum.
@@ -164,15 +167,62 @@ async function processWebhookEvent(
             let logContent = logSummary;
 
             if (action === 'completed' && (conclusion === 'failure' || conclusion === 'timed_out')) {
-                let realLog = (process.env.NODE_ENV !== 'production' && typeof (wr as Record<string, unknown>)._test_logs === 'string')
-                    ? (wr as Record<string, unknown>)._test_logs as string
-                    : await fetchFailedJobLog(repoOwner, repoName, runId);
-                if (!realLog && !(process.env.NODE_ENV !== 'production' && typeof (wr as Record<string, unknown>)._test_logs === 'string')) {
-                    await new Promise((resolve) => setTimeout(resolve, 3000));
-                    realLog = await fetchFailedJobLog(repoOwner, repoName, runId);
-                }
-                if (realLog) {
-                    logContent = realLog;
+                if (process.env.NODE_ENV !== 'production' && typeof (wr as Record<string, unknown>)._test_logs === 'string') {
+                    const rawTestLogs = (wr as Record<string, unknown>)._test_logs as string;
+                    const parsed = parseFailureLog(rawTestLogs);
+                    if (parsed.structured) {
+                        const sanitizedTail = sanitizeLogLines(parsed.logTail).slice(-150).join('\n');
+                        const labelParts = (parsed.stepLabel || '').split(' > ');
+                        logContent = formatFailureLog({
+                            jobName: labelParts[0] || (wr.name as string) || 'build',
+                            stepName: labelParts[1] || 'test',
+                            reasonLines: parsed.reason ? [parsed.reason] : [],
+                            logTail: sanitizedTail,
+                        });
+                    } else {
+                        const cleanedLines = sanitizeLogLines(rawTestLogs);
+                        const logTail = cleanedLines.slice(-150).join('\n');
+                        const errorRegex = /error|failed|exit code|cannot find|not assignable/i;
+                        const reasons: string[] = [];
+                        const seen = new Set<string>();
+                        for (const line of cleanedLines) {
+                            if (line.startsWith('##[error]')) {
+                                const text = line.slice('##[error]'.length).trim();
+                                if (text && !seen.has(text)) {
+                                    seen.add(text);
+                                    reasons.push(text);
+                                    if (reasons.length >= 8) break;
+                                }
+                            }
+                        }
+                        if (reasons.length < 8) {
+                            for (const line of cleanedLines) {
+                                const text = line.startsWith('##[error]')
+                                    ? line.slice('##[error]'.length).trim()
+                                    : line.trim();
+                                if (text && errorRegex.test(text) && !seen.has(text)) {
+                                    seen.add(text);
+                                    reasons.push(text);
+                                    if (reasons.length >= 8) break;
+                                }
+                            }
+                        }
+                        logContent = formatFailureLog({
+                            jobName: (wr.name as string) || 'build',
+                            stepName: 'test',
+                            reasonLines: reasons,
+                            logTail,
+                        });
+                    }
+                } else {
+                    let details = await fetchFailureDetails(repoOwner, repoName, runId);
+                    if (!details) {
+                        await new Promise((resolve) => setTimeout(resolve, 3000));
+                        details = await fetchFailureDetails(repoOwner, repoName, runId);
+                    }
+                    if (details) {
+                        logContent = formatFailureLog(details);
+                    }
                 }
             }
 

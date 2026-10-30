@@ -3,6 +3,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import useSWR from 'swr';
 import StatusBadge from './StatusBadge';
+import { parseFailureLog } from '@/lib/failure-log';
 
 interface DeploymentDetail {
   id: string;
@@ -57,18 +58,19 @@ export function FailureLogPanel({ deploymentId, onClose, repoName }: FailureLogP
 
   if (!deploymentId) return null;
 
-  // Process logs: last 200 lines
-  let processedLogs: string | null = null;
+  // Process logs using parseFailureLog
+  const parsed = data?.logs ? parseFailureLog(data.logs) : null;
+  const displayLogs = parsed ? parsed.logTail : null;
   let logLineCount = 0;
-  if (data?.logs) {
-    const lines = data.logs.split(/\r?\n/);
+  if (displayLogs) {
+    const lines = displayLogs.split(/\r?\n/);
     logLineCount = lines.length;
-    processedLogs = lines.slice(-200).join('\n');
   }
 
   const handleCopy = () => {
-    if (!processedLogs) return;
-    navigator.clipboard.writeText(processedLogs);
+    const textToCopy = data?.logs || displayLogs;
+    if (!textToCopy) return;
+    navigator.clipboard.writeText(textToCopy);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -117,7 +119,7 @@ export function FailureLogPanel({ deploymentId, onClose, repoName }: FailureLogP
             </div>
 
             <div className="flex items-center gap-2">
-              {processedLogs && (
+              {displayLogs && (
                 <button
                   type="button"
                   onClick={handleCopy}
@@ -176,13 +178,41 @@ export function FailureLogPanel({ deploymentId, onClose, repoName }: FailureLogP
 
             {!isLoading && !error && data && (
               <div className="flex-1 flex flex-col">
-                {processedLogs ? (
+                {displayLogs ? (
                   <div className="flex-1 flex flex-col">
+                    {/* Highlighted block when structured, or note when not */}
+                    {parsed?.structured ? (
+                      <div className="mb-4 p-4 border border-[var(--destructive)] bg-[var(--muted)] rounded-[2px] flex flex-col gap-3">
+                        {parsed.stepLabel && (
+                          <div>
+                            <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--muted-foreground)] block mb-1">
+                              FAILED STEP
+                            </span>
+                            <p className="text-xs font-mono font-semibold text-[var(--foreground)]">
+                              {parsed.stepLabel}
+                            </p>
+                          </div>
+                        )}
+                        {parsed.reason && (
+                          <div>
+                            <span className="text-[10px] font-mono uppercase tracking-wider text-[var(--muted-foreground)] block mb-1">
+                              REASON
+                            </span>
+                            <pre className="text-xs font-mono text-[var(--destructive)] whitespace-pre-wrap break-words">
+                              {parsed.reason}
+                            </pre>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="mb-3 text-xs font-mono text-[var(--muted-foreground)] italic">
+                        Reason not available yet
+                      </div>
+                    )}
+
                     <div className="flex items-center justify-between mb-2">
                       <span className="section-label">
-                        {logLineCount > 200
-                          ? `Last 200 lines (of ${logLineCount} total)`
-                          : `${logLineCount} lines`}
+                        {logLineCount} lines
                       </span>
                     </div>
                     <div
@@ -193,7 +223,7 @@ export function FailureLogPanel({ deploymentId, onClose, repoName }: FailureLogP
                       }}
                     >
                       <pre className="font-mono text-[12px] leading-[1.6] whitespace-pre">
-                        {processedLogs}
+                        {displayLogs}
                       </pre>
                     </div>
                   </div>

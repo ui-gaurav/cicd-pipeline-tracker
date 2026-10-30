@@ -12,7 +12,23 @@
  */
 
 import crypto from 'crypto';
+import Module from 'module';
+interface NodeModuleWithRequire {
+    prototype: {
+        require: (id: string, ...args: unknown[]) => unknown;
+    };
+}
+const nodeModule = Module as unknown as NodeModuleWithRequire;
+const origRequire = nodeModule.prototype.require;
+nodeModule.prototype.require = function (id: string, ...args: unknown[]) {
+    if (id === 'server-only') return {};
+    return origRequire.apply(this, [id, ...args]);
+};
+
 import { PrismaClient } from '@prisma/client';
+import { formatFailureLog, parseFailureLog, LOG_MARKER, ESCAPED_LOG_MARKER } from '../lib/failure-log';
+import type { fetchFailureDetails as FetchFailureDetailsType } from '../lib/github-api';
+let fetchFailureDetails: typeof FetchFailureDetailsType;
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const TARGET = process.env.WEBHOOK_URL ?? 'http://localhost:3000/api/webhooks/github';
@@ -80,7 +96,7 @@ async function send(
 async function pollForRow(
     repoId: string,
     runId: string,
-    maxMs = 5000
+    maxMs = 15000
 ): Promise<{ status: string; logs: string | null; deliveryId: string | null } | null> {
     const deadline = Date.now() + maxMs;
     while (Date.now() < deadline) {
@@ -98,7 +114,7 @@ async function pollForStatus(
     repoId: string,
     runId: string,
     expectedStatuses: string[],
-    maxMs = 5000
+    maxMs = 15000
 ): Promise<{ status: string; logs: string | null; deliveryId: string | null } | null> {
     const deadline = Date.now() + maxMs;
     while (Date.now() < deadline) {
@@ -193,6 +209,9 @@ function fail(name: string, details: string) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
+    const ghApi = await import('../lib/github-api');
+    fetchFailureDetails = ghApi.fetchFailureDetails;
+
     console.log('\n=== Webhook Behavior Tests ===\n');
 
     // Count rows for other repos before we start
@@ -312,10 +331,11 @@ async function main() {
         const t2 = new Date().toISOString();
 
         await send('workflow_run', workflowRunPayload('requested',   null,      runId5, t0));
+        await new Promise((r) => setTimeout(r, 300));
         await send('workflow_run', workflowRunPayload('in_progress', null,      runId5, t1));
-        await send('workflow_run', workflowRunPayload('completed',   'failure', runId5, t2));
+        await new Promise((r) => setTimeout(r, 300));
+        await send('workflow_run', workflowRunPayload('completed',   'failure', runId5, t2, 'lifecycle failure log'));
 
-        // fetchFailedJobLog for fake repo returns null, so there is a 3s retry + write time
         const row = await pollForStatus(fakeRepoId, String(runId5), ['FAILURE'], 10000);
         const count = await prisma.deployment.count({
             where: { repositoryId: fakeRepoId, runId: String(runId5) },
@@ -438,16 +458,12 @@ async function main() {
         const tFirst = new Date(Date.now() - 5000).toISOString();
         const tLater = new Date().toISOString();
 
-        await send('workflow_run', workflowRunPayload('completed', 'failure', runId9, tFirst));
+        await send('workflow_run', workflowRunPayload('completed', 'failure', runId9, tFirst, 'recovery failure log'));
         await pollForStatus(fakeRepoId, String(runId9), ['FAILURE'], 10000);
 
         await send('workflow_run', workflowRunPayload('completed', 'success', runId9, tLater));
-        await new Promise((r) => setTimeout(r, 2000));
+        const row = await pollForStatus(fakeRepoId, String(runId9), ['SUCCESS'], 10000);
 
-        const row = await prisma.deployment.findUnique({
-            where: { repositoryId_runId: { repositoryId: fakeRepoId, runId: String(runId9) } },
-            select: { status: true },
-        });
         const count = await prisma.deployment.count({
             where: { repositoryId: fakeRepoId, runId: String(runId9) },
         });
@@ -469,12 +485,16 @@ async function main() {
 
         const pushDeliveryId = uuidv4();
         const res = await send('push', pushPayload(), { deliveryId: pushDeliveryId });
-        await new Promise((r) => setTimeout(r, 1500));
-
-        const pushRow = await prisma.deployment.findUnique({
-            where: { deliveryId: pushDeliveryId },
-            select: { runId: true, status: true },
-        });
+        let pushRow = null;
+        const pushDeadline = Date.now() + 5000;
+        while (Date.now() < pushDeadline) {
+            pushRow = await prisma.deployment.findUnique({
+                where: { deliveryId: pushDeliveryId },
+                select: { runId: true, status: true },
+            });
+            if (pushRow) break;
+            await new Promise((r) => setTimeout(r, 200));
+        }
         const runRowCountAfter = await prisma.deployment.count({
             where: { repositoryId: fakeRepoId, runId: String(runId5) },
         });
@@ -500,8 +520,8 @@ async function main() {
         if (res.status !== 200) {
             fail('11. fetchFailedJobLog null: response', `got ${res.status} expected 200`);
         } else {
-            // 3s retry built in + settle time; poll up to 9s
-            const row = await pollForStatus(fakeRepoId, String(runId11), ['FAILURE'], 9000);
+            // 3s retry built in + settle time; poll up to 20s
+            const row = await pollForStatus(fakeRepoId, String(runId11), ['FAILURE'], 20000);
 
             if (row && row.status === 'FAILURE') {
                 const summaryKept = !row.logs || row.logs.startsWith('Workflow:');
@@ -523,14 +543,19 @@ async function main() {
     console.log('\n-- Case 12: (a) After FAILURE with a fetched log, a later SUCCESS leaves logs as summary text');
     {
         const runId12 = 99990012;
-        const FETCHED_MARKER_12 = 'FETCHED-LOG-MARKER-12\nsome real failure output from job\nstack trace line';
+        const FETCHED_LOG_12 = formatFailureLog({
+            jobName: 'CI',
+            stepName: 'test',
+            reasonLines: ['some real failure output from job', 'stack trace line'],
+            logTail: 'log line 1\nlog line 2',
+        });
 
         // 1. Send failure with fetched log content
         const tFailure = new Date(Date.now() - 8000).toISOString();
-        await send('workflow_run', workflowRunPayload('completed', 'failure', runId12, tFailure, FETCHED_MARKER_12));
+        await send('workflow_run', workflowRunPayload('completed', 'failure', runId12, tFailure, FETCHED_LOG_12));
         const failureRow = await pollForStatus(fakeRepoId, String(runId12), ['FAILURE'], 10000);
 
-        if (!failureRow || failureRow.logs !== FETCHED_MARKER_12) {
+        if (!failureRow || !failureRow.logs?.startsWith('FAILED STEP: ')) {
             fail('12. Case (a): after FAILURE with fetched log, later SUCCESS leaves logs as summary text',
                 `setup failed: row not created with fetched log: ${failureRow?.logs?.slice(0, 40)}`);
         } else {
@@ -538,12 +563,7 @@ async function main() {
             // Rule: when incoming status is SUCCESS, write summary text to logs even if existing logs are fetched
             const tSuccess = new Date().toISOString();
             await send('workflow_run', workflowRunPayload('completed', 'success', runId12, tSuccess));
-            await new Promise((r) => setTimeout(r, 1500));
-
-            const row = await prisma.deployment.findUnique({
-                where: { repositoryId_runId: { repositoryId: fakeRepoId, runId: String(runId12) } },
-                select: { status: true, logs: true },
-            });
+            const row = await pollForStatus(fakeRepoId, String(runId12), ['SUCCESS'], 10000);
 
             const statusOk = row?.status === 'SUCCESS';
             const logsResetToSummary = typeof row?.logs === 'string' && row.logs.startsWith('Workflow:');
@@ -562,15 +582,25 @@ async function main() {
     console.log('\n-- Case 13: (b) A second failure replaces the older fetched log');
     {
         const runId13 = 99990013;
-        const FETCHED_LOG_OLD = 'FETCHED-LOG-MARKER-13-OLD\nfirst failed job log line 1\nline 2';
-        const FETCHED_LOG_NEW = 'FETCHED-LOG-MARKER-13-NEW\nsecond failed job log line 1\nline 2';
+        const FETCHED_LOG_OLD = formatFailureLog({
+            jobName: 'CI',
+            stepName: 'test',
+            reasonLines: ['first failed job log line 1'],
+            logTail: 'old failure log output',
+        });
+        const FETCHED_LOG_NEW = formatFailureLog({
+            jobName: 'CI',
+            stepName: 'test',
+            reasonLines: ['second failed job log line 1'],
+            logTail: 'new failure log output',
+        });
 
         // 1. First failure with older fetched log
         const tFirst = new Date(Date.now() - 8000).toISOString();
         await send('workflow_run', workflowRunPayload('completed', 'failure', runId13, tFirst, FETCHED_LOG_OLD));
         const firstRow = await pollForStatus(fakeRepoId, String(runId13), ['FAILURE'], 10000);
 
-        if (!firstRow || firstRow.logs !== FETCHED_LOG_OLD) {
+        if (!firstRow || !firstRow.logs?.startsWith('FAILED STEP: ')) {
             fail('13. Case (b): a second failure replaces the older fetched log',
                 `setup failed: first failure row not created with FETCHED_LOG_OLD: ${firstRow?.logs?.slice(0, 40)}`);
         } else {
@@ -579,15 +609,23 @@ async function main() {
             // write it, replacing an older fetched log.
             const tSecond = new Date().toISOString();
             await send('workflow_run', workflowRunPayload('completed', 'failure', runId13, tSecond, FETCHED_LOG_NEW));
-            await new Promise((r) => setTimeout(r, 1500));
 
-            const secondRow = await prisma.deployment.findUnique({
-                where: { repositoryId_runId: { repositoryId: fakeRepoId, runId: String(runId13) } },
-                select: { status: true, logs: true },
-            });
+            const deadline = Date.now() + 10000;
+            let secondRow = null;
+            while (Date.now() < deadline) {
+                const r = await prisma.deployment.findUnique({
+                    where: { repositoryId_runId: { repositoryId: fakeRepoId, runId: String(runId13) } },
+                    select: { status: true, logs: true },
+                });
+                if (r?.logs?.includes('second failed job log line 1')) {
+                    secondRow = r;
+                    break;
+                }
+                await new Promise((res) => setTimeout(res, 200));
+            }
 
             const statusOk = secondRow?.status === 'FAILURE';
-            const logReplaced = secondRow?.logs === FETCHED_LOG_NEW;
+            const logReplaced = secondRow?.logs?.includes('second failed job log line 1') && secondRow?.logs?.includes('new failure log output');
 
             // 3. Stale event (non-terminal / older timestamp) must not overwrite the new fetched log
             const tStale = new Date(Date.now() - 20000).toISOString();
@@ -598,7 +636,7 @@ async function main() {
                 where: { repositoryId_runId: { repositoryId: fakeRepoId, runId: String(runId13) } },
                 select: { status: true, logs: true },
             });
-            const preservedAfterStale = staleCheckRow?.logs === FETCHED_LOG_NEW;
+            const preservedAfterStale = staleCheckRow?.logs === secondRow?.logs;
 
             if (statusOk && logReplaced && preservedAfterStale) {
                 pass('13. Case (b): a second failure replaces the older fetched log',
@@ -606,6 +644,313 @@ async function main() {
             } else {
                 fail('13. Case (b): a second failure replaces the older fetched log',
                     `status=${secondRow?.status} logReplaced=${logReplaced} preservedAfterStale=${preservedAfterStale} logs="${secondRow?.logs?.slice(0, 60)}"`);
+            }
+        }
+    }
+
+    // ── Case 14: format and parse round trip ─────────────────────────────────
+    console.log('\n-- Case 14: format and parse round trip');
+    {
+        const jobName = 'ci-build';
+        const stepName = 'test-runner';
+        const reasonLines = ['TypeError: null has no properties', 'Process completed with exit code 1'];
+        const logTail = 'npm test output line 1\nnpm test output line 2\nDone.';
+
+        const formatted = formatFailureLog({ jobName, stepName, reasonLines, logTail });
+        const parsed = parseFailureLog(formatted);
+
+        if (
+            parsed.structured === true &&
+            parsed.stepLabel === `${jobName} > ${stepName}` &&
+            parsed.reason === reasonLines.join('\n') &&
+            parsed.logTail === logTail
+        ) {
+            pass('14. format and parse round trip', `stepLabel="${parsed.stepLabel}"`);
+        } else {
+            fail('14. format and parse round trip', `unexpected parse result: ${JSON.stringify(parsed)}`);
+        }
+    }
+
+    // ── Case 15: CRLF input ──────────────────────────────────────────────────
+    console.log('\n-- Case 15: CRLF input normalization');
+    {
+        const formatted = formatFailureLog({
+            jobName: 'ci\r\njob',
+            stepName: 'test\r\nstep',
+            reasonLines: ['error line 1\r\nerror line 2'],
+            logTail: 'tail line 1\r\ntail line 2\r\n',
+        });
+
+        const parsed = parseFailureLog(formatted);
+        const noCR = !formatted.includes('\r');
+
+        if (
+            noCR &&
+            parsed.structured === true &&
+            parsed.stepLabel === 'cijob > teststep' &&
+            parsed.reason === 'error line 1\nerror line 2' &&
+            parsed.logTail === 'tail line 1\ntail line 2\n'
+        ) {
+            pass('15. CRLF input', 'CRLF normalised to LF, newlines stripped from names');
+        } else {
+            fail('15. CRLF input', `noCR=${noCR} parsed=${JSON.stringify(parsed)}`);
+        }
+    }
+
+    // ── Case 16: LOG marker twice and one inside a reason line ───────────────
+    console.log('\n-- Case 16: log containing LOG marker twice and one inside a reason line');
+    {
+        const formatted = formatFailureLog({
+            jobName: 'build',
+            stepName: 'test',
+            reasonLines: [`error with ${LOG_MARKER} in reason`],
+            logTail: `first ${LOG_MARKER} middle ${LOG_MARKER} last`,
+        });
+
+        const parsed = parseFailureLog(formatted);
+        const reasonEscaped = parsed.reason === `error with ${ESCAPED_LOG_MARKER} in reason`;
+        const tailEscaped = parsed.logTail === `first ${ESCAPED_LOG_MARKER} middle ${ESCAPED_LOG_MARKER} last`;
+
+        if (parsed.structured === true && reasonEscaped && tailEscaped) {
+            pass('16. LOG marker replacement', 'Dynamic markers replaced with escaped marker and parsed successfully');
+        } else {
+            fail('16. LOG marker replacement', `reasonEscaped=${reasonEscaped} tailEscaped=${tailEscaped} parsed=${JSON.stringify(parsed)}`);
+        }
+    }
+
+    // ── Case 17: "REASON:" inside the log tail ───────────────────────────────
+    console.log('\n-- Case 17: "REASON:" inside the log tail');
+    {
+        const formatted = formatFailureLog({
+            jobName: 'build',
+            stepName: 'test',
+            reasonLines: ['Initial failure reason'],
+            logTail: 'Step 1\nREASON:\nsome internal reason line\nStep 2 done',
+        });
+
+        const parsed = parseFailureLog(formatted);
+
+        if (
+            parsed.structured === true &&
+            parsed.reason === 'Initial failure reason' &&
+            parsed.logTail === 'Step 1\nREASON:\nsome internal reason line\nStep 2 done'
+        ) {
+            pass('17. "REASON:" inside log tail', 'Parsed cleanly on the first REASON: delimiter');
+        } else {
+            fail('17. "REASON:" inside log tail', `unexpected parsed: ${JSON.stringify(parsed)}`);
+        }
+    }
+
+    // ── Case 18: Summary text parses as unstructured ─────────────────────────
+    console.log('\n-- Case 18: Summary text parses as unstructured');
+    {
+        const summary = 'Workflow: CI\nBranch: main\nConclusion: failure\nStatus: completed\nURL: https://github.com\nCommit: sha123';
+        const parsed = parseFailureLog(summary);
+
+        if (parsed.structured === false && parsed.logTail === summary) {
+            pass('18. Summary text parses as unstructured', 'structured=false, logTail equals whole input');
+        } else {
+            fail('18. Summary text parses as unstructured', `unexpected parsed: ${JSON.stringify(parsed)}`);
+        }
+    }
+
+    // ── Case 19: Empty-reason case writes "(no error lines found)" ────────────
+    console.log('\n-- Case 19: Empty-reason case writes "(no error lines found)"');
+    {
+        const formatted = formatFailureLog({
+            jobName: 'build',
+            stepName: 'test',
+            reasonLines: [],
+            logTail: 'just logs with no identifiable error line',
+        });
+
+        const parsed = parseFailureLog(formatted);
+
+        if (parsed.structured === true && parsed.reason === '(no error lines found)') {
+            pass('19. Empty-reason case', 'Fallback reason written and parsed as structured');
+        } else {
+            fail('19. Empty-reason case', `reason="${parsed.reason}" structured=${parsed.structured}`);
+        }
+    }
+
+    // ── Stub fetch helper for unit tests (no monkeypatching global fetch) ────
+    function makeStubFetch(handlers: {
+        jobs?: () => Response | Promise<Response>;
+        annotations?: () => Response | Promise<Response>;
+        logs?: () => Response | Promise<Response>;
+    }): typeof fetch {
+        return (async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.includes('/actions/runs/') && url.endsWith('/jobs')) {
+                return handlers.jobs ? await handlers.jobs() : new Response(JSON.stringify({ jobs: [] }), { status: 200 });
+            }
+            if (url.includes('/check-runs/') && url.endsWith('/annotations')) {
+                return handlers.annotations ? await handlers.annotations() : new Response(JSON.stringify([]), { status: 200 });
+            }
+            if (url.includes('/actions/jobs/') && url.endsWith('/logs')) {
+                return handlers.logs ? await handlers.logs() : new Response('', { status: 200 });
+            }
+            return new Response('Not Found', { status: 404 });
+        }) as typeof fetch;
+    }
+
+    // ── Case 20: Token masking via stubbed fetch ──────────────────────────────
+    console.log('\n-- Case 20: Token masking via stubbed fetch');
+    {
+        const stubFetch = makeStubFetch({
+            jobs: () => new Response(JSON.stringify({
+                jobs: [{
+                    id: 101,
+                    name: 'security-job',
+                    conclusion: 'failure',
+                    steps: [{ name: 'run-auth-test', conclusion: 'failure' }],
+                }],
+            }), { status: 200 }),
+            annotations: () => new Response(JSON.stringify([]), { status: 200 }),
+            logs: () => new Response([
+                'auth test line 1: ghp_1234567890abcdef',
+                'auth test line 2: gho_1234567890abcdef',
+                'auth test line 3: ghs_1234567890abcdef',
+                'auth test line 4: ghu_1234567890abcdef',
+                'auth test line 5: ghr_1234567890abcdef',
+                'auth test line 6: github_pat_11AABBCC_0123456789',
+                'auth test line 7: Bearer mySecretToken123456',
+            ].join('\n'), { status: 200 }),
+        });
+
+        const details = await fetchFailureDetails(FAKE_OWNER, FAKE_REPO, 12345, stubFetch);
+
+        const tail = details?.logTail ?? '';
+        const hasGhp = tail.includes('ghp_');
+        const hasGho = tail.includes('gho_');
+        const hasGhs = tail.includes('ghs_');
+        const hasGhu = tail.includes('ghu_');
+        const hasGhr = tail.includes('ghr_');
+        const hasPat = tail.includes('github_pat_');
+        const hasBearerRaw = tail.includes('mySecretToken123456');
+        const hasMaskedBearer = tail.includes('Bearer ***');
+
+        if (
+            details &&
+            !hasGhp && !hasGho && !hasGhs && !hasGhu && !hasGhr && !hasPat &&
+            !hasBearerRaw && hasMaskedBearer
+        ) {
+            pass('20. Token masking', 'All token types and Bearer values masked with ***');
+        } else {
+            fail('20. Token masking', `tokens leaked or Bearer not masked: tail="${tail}"`);
+        }
+    }
+
+    // ── Case 21: ANSI and timestamp stripping via stubbed fetch ──────────────
+    console.log('\n-- Case 21: ANSI and timestamp stripping via stubbed fetch');
+    {
+        const stubFetch = makeStubFetch({
+            jobs: () => new Response(JSON.stringify({
+                jobs: [{
+                    id: 102,
+                    name: 'ansi-job',
+                    conclusion: 'failure',
+                    steps: [{ name: 'run-lint', conclusion: 'failure' }],
+                }],
+            }), { status: 200 }),
+            annotations: () => new Response(JSON.stringify([]), { status: 200 }),
+            logs: () => new Response([
+                '\u001b[31m[2026-10-25 12:34:56] \u001b[1mError: compilation error\u001b[0m',
+                '2026-10-25T12:34:56.7890123Z Process completed with exit code 1',
+            ].join('\n'), { status: 200 }),
+        });
+
+        const details = await fetchFailureDetails(FAKE_OWNER, FAKE_REPO, 12345, stubFetch);
+        const tail = details?.logTail ?? '';
+        const hasAnsi = /[\u001b\u009b]/.test(tail);
+        const hasTimestamp = /^\[?\d{4}[-/]\d{2}[-/]\d{2}/m.test(tail);
+
+        if (details && !hasAnsi && !hasTimestamp && tail.includes('Error: compilation error')) {
+            pass('21. ANSI and timestamp stripping', 'ANSI codes and timestamps stripped');
+        } else {
+            fail('21. ANSI and timestamp stripping', `hasAnsi=${hasAnsi} hasTimestamp=${hasTimestamp} tail="${tail}"`);
+        }
+    }
+
+    // ── Case 22: Annotations returning 403 still yields details ───────────────
+    console.log('\n-- Case 22: Annotations returning 403 still yields details');
+    {
+        const stubFetch = makeStubFetch({
+            jobs: () => new Response(JSON.stringify({
+                jobs: [{
+                    id: 103,
+                    name: 'perm-job',
+                    conclusion: 'failure',
+                    steps: [{ name: 'restricted-step', conclusion: 'failure' }],
+                }],
+            }), { status: 200 }),
+            annotations: () => new Response(JSON.stringify({ message: 'Resource not accessible by integration' }), { status: 403 }),
+            logs: () => new Response([
+                '##[group]Run restricted-step',
+                '##[error]AccessDenied: credentials invalid',
+                '##[endgroup]',
+            ].join('\n'), { status: 200 }),
+        });
+
+        const details = await fetchFailureDetails(FAKE_OWNER, FAKE_REPO, 12345, stubFetch);
+
+        if (
+            details &&
+            details.annotations.length === 0 &&
+            details.reasonLines.includes('AccessDenied: credentials invalid')
+        ) {
+            pass('22. Annotations returning 403', 'Handled 403 gracefully and extracted reasons from log');
+        } else {
+            fail('22. Annotations returning 403', `details=${JSON.stringify(details)}`);
+        }
+    }
+
+    // ── Case 23: All calls failing returns null ──────────────────────────────
+    console.log('\n-- Case 23: All calls failing returns null');
+    {
+        const stubFetch = makeStubFetch({
+            jobs: () => new Response('Server Error', { status: 500 }),
+        });
+
+        const details = await fetchFailureDetails(FAKE_OWNER, FAKE_REPO, 12345, stubFetch);
+
+        if (details === null) {
+            pass('23. All calls failing returns null', 'Never throws, returns null');
+        } else {
+            fail('23. All calls failing returns null', `expected null, got: ${JSON.stringify(details)}`);
+        }
+    }
+
+    // ── Case 24: 150-line log tail stored string starts with "FAILED STEP: " and parses as structured
+    console.log('\n-- Case 24: 150-line log tail produces stored string that starts with "FAILED STEP: " and parses as structured');
+    {
+        const runId24 = 99990024;
+        const tailLines150 = Array.from({ length: 150 }, (_, i) => `log line ${i + 1}: detailed output from step`).join('\n');
+        const formatted150 = formatFailureLog({
+            jobName: 'build-and-test',
+            stepName: 'run-vitest',
+            reasonLines: ['AssertionError: expected true to be false'],
+            logTail: tailLines150,
+        });
+
+        // Send via webhook to verify no truncation between fetch and db write
+        await send('workflow_run', workflowRunPayload('completed', 'failure', runId24, undefined, formatted150));
+        const row = await pollForStatus(fakeRepoId, String(runId24), ['FAILURE'], 10000);
+
+        if (!row || !row.logs) {
+            fail('24. 150-line log tail preserved', `row not found or logs null`);
+        } else {
+            const startsOk = row.logs.startsWith('FAILED STEP: ');
+            const parsed = parseFailureLog(row.logs);
+            const structuredOk = parsed.structured === true;
+            const logTailLineCount = parsed.logTail ? parsed.logTail.split('\n').length : 0;
+
+            if (startsOk && structuredOk && logTailLineCount === 150) {
+                pass('24. 150-line log tail preserved without truncation',
+                    `startsOk=${startsOk} structuredOk=${structuredOk} logTailLineCount=${logTailLineCount}`);
+            } else {
+                fail('24. 150-line log tail preserved without truncation',
+                    `startsOk=${startsOk} structuredOk=${structuredOk} logTailLineCount=${logTailLineCount} first50="${row.logs.slice(0, 50)}"`);
             }
         }
     }

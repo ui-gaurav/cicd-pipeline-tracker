@@ -8,6 +8,14 @@ export interface GitHubRepoStats {
   primaryLanguage: string | null;
 }
 
+export interface FailureDetails {
+  jobName: string;
+  stepName: string;
+  annotations: string[];
+  reasonLines: string[];
+  logTail: string;
+}
+
 function parseLastPage(linkHeader: string | null): number | null {
   if (!linkHeader) return null;
   // Match rel="last" in Link header: <https://api.github.com/...page=123>; rel="last"
@@ -99,39 +107,59 @@ export async function fetchRepoStats(owner: string, repo: string): Promise<GitHu
   };
 }
 
-export function cleanJobLog(rawLogs: string): string {
-  // 1. Strip ANSI colour codes
+/**
+ * Sanitizes raw log text by:
+ * 1. Normalising CRLF to LF
+ * 2. Stripping ANSI colour codes
+ * 3. Stripping leading timestamps
+ * 4. Masking tokens (ghp_, gho_, ghs_, ghu_, ghr_, github_pat_, Bearer values)
+ */
+export function sanitizeLogLines(rawLogs: string): string[] {
+  const normLogs = rawLogs.replace(/\r\n/g, '\n');
   const ansiRegex =
     /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]|\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g;
-  const noAnsi = rawLogs.replace(ansiRegex, '');
+  const noAnsi = normLogs.replace(ansiRegex, '');
 
-  // 2. Keep only the last 150 lines
-  const lines = noAnsi.split(/\r?\n/);
-  const last150 = lines.slice(-150);
+  const lines = noAnsi.split('\n');
 
-  // 3. Strip leading timestamps: e.g. "2026-10-25T12:34:56.7890123Z " or "[2026-10-25 12:34:56] "
   const timestampRegex =
     /^\[?\d{4}[-/]\d{2}[-/]\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\]?\s*/;
+  const tokenRegex =
+    /(?:ghp|gho|ghs|ghu|ghr)_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+/g;
+  const bearerRegex =
+    /(Bearer\s+)["']?\S+?["']?(?=[\s,;]|"|'|$)/gi;
 
-  // 4. Mask anything that looks like a token (ghp_, github_pat_, Bearer values)
-  const cleaned = last150.map((line) => {
+  return lines.map((line) => {
     return line
       .replace(timestampRegex, '')
-      .replace(/(Bearer\s+)["']?\S+?["']?(?=[\s,;]|"|'|$)/gi, '$1***')
-      .replace(/ghp_[A-Za-z0-9_-]+/g, '***')
-      .replace(/github_pat_[A-Za-z0-9_-]+/g, '***');
+      .replace(bearerRegex, '$1***')
+      .replace(tokenRegex, '***');
   });
-
-  return cleaned.join('\n');
 }
 
-export async function fetchFailedJobLog(
+export function cleanJobLog(rawLogs: string): string {
+  const cleanedLines = sanitizeLogLines(rawLogs);
+  return cleanedLines.slice(-150).join('\n');
+}
+
+/**
+ * Fetches failure details for a GitHub Actions workflow run.
+ *
+ * Rules:
+ * - Read GITHUB_TOKEN inside the function
+ * - Each request has 10s timeout, entire function has 20s deadline
+ * - Optional 4th parameter fetchImpl defaults to global fetch
+ * - Never throw (returns null on error)
+ * - GET /repos/{owner}/{repo}/actions/runs/{runId}/jobs
+ * - Parallel GET annotations and GET logs
+ */
+export async function fetchFailureDetails(
   owner: string,
   repo: string,
-  runId: string | number
-): Promise<string | null> {
+  runId: string | number,
+  fetchImpl: typeof fetch = fetch
+): Promise<FailureDetails | null> {
   try {
-    // Read GITHUB_TOKEN inside the function, never at module load
     const token = process.env.GITHUB_TOKEN;
     const headers: Record<string, string> = {
       Accept: 'application/vnd.github+json',
@@ -141,70 +169,194 @@ export async function fetchFailedJobLog(
       headers.Authorization = `Bearer ${token}`;
     }
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const overallSignal = AbortSignal.timeout(20000);
+    const makeRequestSignal = () => AbortSignal.any([overallSignal, AbortSignal.timeout(10000)]);
 
-    try {
-      // 1. Call GET /repos/{owner}/{repo}/actions/runs/{runId}/jobs
-      const jobsRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/jobs`,
-        {
-          headers,
-          signal: controller.signal,
-        }
-      );
+    // 1. GET /repos/{owner}/{repo}/actions/runs/{runId}/jobs
+    const jobsUrl = `https://api.github.com/repos/${owner}/${repo}/actions/runs/${runId}/jobs`;
+    const jobsRes = await fetchImpl(jobsUrl, {
+      headers,
+      signal: makeRequestSignal(),
+    });
 
-      if (!jobsRes.ok) {
-        return null;
-      }
+    if (!jobsRes.ok) {
+      return null;
+    }
 
-      const jobsData = (await jobsRes.json()) as {
-        jobs?: Array<{
-          id: number;
+    const jobsData = (await jobsRes.json()) as {
+      jobs?: Array<{
+        id: number;
+        name?: string;
+        conclusion: string | null;
+        steps?: Array<{
+          name?: string;
           conclusion: string | null;
         }>;
-      };
+      }>;
+    };
 
-      if (!jobsData.jobs || !Array.isArray(jobsData.jobs)) {
-        return null;
-      }
-
-      // Pick the first job whose conclusion is failure or timed_out
-      const failedJob = jobsData.jobs.find((job) => {
-        const conc = job.conclusion?.toLowerCase();
-        return conc === 'failure' || conc === 'timed_out';
-      });
-
-      if (!failedJob) {
-        return null;
-      }
-
-      // 2. Call GET /repos/{owner}/{repo}/actions/jobs/{jobId}/logs (it redirects, follow it)
-      const logsRes = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/actions/jobs/${failedJob.id}/logs`,
-        {
-          headers,
-          signal: controller.signal,
-          redirect: 'follow',
-        }
-      );
-
-      if (!logsRes.ok) {
-        return null;
-      }
-
-      const rawLogs = await logsRes.text();
-      if (!rawLogs) {
-        return null;
-      }
-
-      const cleaned = cleanJobLog(rawLogs);
-      return cleaned.trim() ? cleaned : null;
-    } finally {
-      clearTimeout(timeout);
+    if (!jobsData.jobs || !Array.isArray(jobsData.jobs)) {
+      return null;
     }
+
+    // First job with conclusion failure or timed_out
+    const failedJob = jobsData.jobs.find((job) => {
+      const conc = job.conclusion?.toLowerCase();
+      return conc === 'failure' || conc === 'timed_out';
+    });
+
+    if (!failedJob) {
+      return null;
+    }
+
+    const jobName = failedJob.name || 'unknown job';
+    const failedStep = failedJob.steps?.find(
+      (s) => s.conclusion?.toLowerCase() === 'failure'
+    );
+    const stepName = failedStep?.name || 'unknown step';
+    const jobId = failedJob.id;
+
+    // Run annotations and log requests in parallel
+    const annotationsUrl = `https://api.github.com/repos/${owner}/${repo}/check-runs/${jobId}/annotations`;
+    const logsUrl = `https://api.github.com/repos/${owner}/${repo}/actions/jobs/${jobId}/logs`;
+
+    const [annotationsRes, logsRes] = await Promise.all([
+      fetchImpl(annotationsUrl, {
+        headers,
+        signal: makeRequestSignal(),
+      }).catch(() => null),
+      fetchImpl(logsUrl, {
+        headers,
+        signal: makeRequestSignal(),
+        redirect: 'follow',
+      }).catch(() => null),
+    ]);
+
+    // Parse annotations: up to 5 as "path:line message", skipping generic exit code message when others exist.
+    // On 403, 404, or failure continue without annotations.
+    let annotations: string[] = [];
+    if (annotationsRes && annotationsRes.ok) {
+      try {
+        const rawAnnotations = (await annotationsRes.json()) as Array<{
+          path?: string;
+          start_line?: number;
+          end_line?: number;
+          message?: string;
+        }>;
+        if (Array.isArray(rawAnnotations)) {
+          const isGeneric = (msg: string) =>
+            /Process completed with exit code \d+/i.test(msg);
+          const nonGeneric = rawAnnotations.filter((a) => !isGeneric(a.message || ''));
+          const chosen = (nonGeneric.length > 0 ? nonGeneric : rawAnnotations).slice(0, 5);
+          annotations = chosen.map((a) => {
+            const line = a.start_line ?? a.end_line ?? 1;
+            const path = a.path || 'unknown';
+            const msg = a.message ? ` ${a.message.trim()}` : '';
+            return `${path}:${line}${msg}`.trim();
+          });
+        }
+      } catch {
+        annotations = [];
+      }
+    }
+
+    // Parse logs
+    if (!logsRes || !logsRes.ok) {
+      return null;
+    }
+
+    const rawLogs = await logsRes.text();
+    if (!rawLogs) {
+      return null;
+    }
+
+    const cleanedLines = sanitizeLogLines(rawLogs);
+    const tailLines = cleanedLines.slice(-150);
+    const logTail = tailLines.join('\n');
+
+    // Isolate failed step's section between its ##[group] markers when possible
+    let candidateLines = tailLines;
+    if (stepName !== 'unknown step') {
+      const stepLower = stepName.toLowerCase();
+      const groupStartIdx = cleanedLines.findIndex(
+        (l) => l.startsWith('##[group]') && l.toLowerCase().includes(stepLower)
+      );
+      if (groupStartIdx !== -1) {
+        let groupEndIdx = cleanedLines.findIndex(
+          (l, idx) =>
+            idx > groupStartIdx &&
+            (l.startsWith('##[group]') || l.startsWith('##[endgroup]'))
+        );
+        if (groupEndIdx === -1) {
+          groupEndIdx = cleanedLines.length;
+        }
+        const isolated = cleanedLines.slice(groupStartIdx + 1, groupEndIdx);
+        if (isolated.length > 0) {
+          candidateLines = isolated;
+        }
+      }
+    }
+
+    // Extract reasonLines:
+    // lines starting with "##[error]" first (prefix removed),
+    // then lines matching /error|failed|exit code|cannot find|not assignable/i,
+    // up to 8 in total, deduplicated, in order.
+    // If there are none, use the annotations.
+    const reasonLines: string[] = [];
+    const seen = new Set<string>();
+
+    for (const line of candidateLines) {
+      if (line.startsWith('##[error]')) {
+        const text = line.slice('##[error]'.length).trim();
+        if (text && !seen.has(text)) {
+          seen.add(text);
+          reasonLines.push(text);
+          if (reasonLines.length >= 8) break;
+        }
+      }
+    }
+
+    if (reasonLines.length < 8) {
+      const errorRegex = /error|failed|exit code|cannot find|not assignable/i;
+      for (const line of candidateLines) {
+        const text = line.startsWith('##[error]')
+          ? line.slice('##[error]'.length).trim()
+          : line.trim();
+        if (text && errorRegex.test(text) && !seen.has(text)) {
+          seen.add(text);
+          reasonLines.push(text);
+          if (reasonLines.length >= 8) break;
+        }
+      }
+    }
+
+    if (reasonLines.length === 0 && annotations.length > 0) {
+      for (const ann of annotations) {
+        if (!seen.has(ann)) {
+          seen.add(ann);
+          reasonLines.push(ann);
+          if (reasonLines.length >= 8) break;
+        }
+      }
+    }
+
+    return {
+      jobName,
+      stepName,
+      annotations,
+      reasonLines,
+      logTail,
+    };
   } catch {
-    // Return null on any error; never throw
     return null;
   }
+}
+
+export async function fetchFailedJobLog(
+  owner: string,
+  repo: string,
+  runId: string | number
+): Promise<string | null> {
+  const details = await fetchFailureDetails(owner, repo, runId);
+  return details ? details.logTail : null;
 }
