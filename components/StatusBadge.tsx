@@ -1,49 +1,50 @@
 import React from 'react';
+import { normalizeStatus, isStale, statusLabel, statusTone } from '@/lib/status';
 
 export interface StatusBadgeProps {
-  status: string;
+  status: string | null | undefined;
+  timestamp?: string | number | Date | null;
+  nowMs?: number;
+  stale?: boolean;
   className?: string;
   showText?: boolean;
 }
 
-type BadgeStatus = 'PASSED' | 'FAILED' | 'RUNNING' | 'PENDING';
+const TONE_BG: Record<string, string> = {
+  pass: 'bg-status-pass',
+  fail: 'bg-status-fail',
+  pending: 'bg-status-pending',
+  idle: 'bg-status-idle',
+};
 
-function getBadgeConfig(status: string | null | undefined): { label: BadgeStatus; color: string } {
-  const s = (status ?? '').toUpperCase();
-  if (s === 'SUCCESS' || s === 'PASSED') {
-    return { label: 'PASSED', color: 'var(--status-pass)' };
-  }
-  if (['FAILED', 'FAILURE', 'CANCELLED', 'TIMED_OUT'].includes(s)) {
-    return { label: 'FAILED', color: 'var(--status-fail)' };
-  }
-  if (s === 'RUNNING' || s === 'IN_PROGRESS') {
-    return { label: 'RUNNING', color: 'var(--status-pending)' };
-  }
-  if (['PENDING', 'QUEUED', 'WAITING', 'REQUESTED'].includes(s)) {
-    return { label: 'PENDING', color: 'var(--status-pending)' };
-  }
-  return { label: 'PENDING', color: 'var(--status-idle)' };
-}
+export function StatusBadge({
+  status,
+  timestamp,
+  nowMs,
+  stale,
+  className = '',
+  showText = true,
+}: StatusBadgeProps) {
+  const norm = normalizeStatus(status);
+  const tsMs = timestamp ? new Date(timestamp).getTime() : 0;
+  const isStaleRun =
+    stale !== undefined ? stale : tsMs > 0 && nowMs ? isStale(status, tsMs, nowMs) : false;
 
-export function StatusBadge({ status, className = '', showText = true }: StatusBadgeProps) {
-  const { label, color } = getBadgeConfig(status);
+  const label = statusLabel(status, isStaleRun);
+  const tone = statusTone(status, isStaleRun);
+  const shouldPulse = norm === 'active' && !isStaleRun;
 
   return (
     <span
-      className={`inline-flex items-center gap-1.5 px-2 py-0.5 border border-[var(--border)] rounded-[2px] bg-[var(--card)] text-[var(--foreground)] font-mono text-[11px] uppercase tracking-wider select-none ${className}`}
-      style={{
-        borderWidth: '1px',
-        borderColor: 'var(--border)',
-        borderRadius: '2px',
-        color: 'var(--foreground)',
-      }}
+      className={`inline-flex items-center gap-1.5 px-2 py-0.5 border border-border rounded-[var(--radius)] bg-card text-foreground font-mono text-[11px] uppercase tracking-wider select-none ${className}`}
     >
       <span
-        className="w-[8px] h-[8px] shrink-0"
-        style={{ backgroundColor: color }}
+        className={`w-2 h-2 shrink-0 ${TONE_BG[tone] || 'bg-status-idle'} ${
+          shouldPulse ? 'animate-status-pulse' : ''
+        }`}
         aria-hidden="true"
       />
-      {showText && <span>{label}</span>}
+      {showText && <span className="text-foreground">{label}</span>}
     </span>
   );
 }

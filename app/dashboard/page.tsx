@@ -14,11 +14,14 @@ export default async function DashboardPage() {
 
   // Server component for first render: read Prisma directly with no loading flash
   const initialData = await getDeploymentsData();
+  // eslint-disable-next-line react-hooks/purity
+  const serverNow = Date.now();
 
   return (
     <DashboardClient
       initialData={initialData}
       userRole={session.user.role}
+      serverNow={serverNow}
     />
   );
 }

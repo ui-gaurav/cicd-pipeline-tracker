@@ -6,11 +6,13 @@ import EnvironmentTabs, { EnvironmentTab } from './EnvironmentTabs';
 import RepoCard from './RepoCard';
 import FailureLogPanel from './FailureLogPanel';
 import { parseAndValidateRepoInput } from '@/lib/repo-validation';
+import { computeKpis } from '@/lib/kpi';
 import type { RepositoryDeployments, DeploymentItem } from '@/types/deployments';
 
 interface DashboardClientProps {
   initialData: RepositoryDeployments[];
   userRole?: string;
+  serverNow?: number;
 }
 
 const fetcher = async (url: string) => {
@@ -49,11 +51,17 @@ function extractCardsMap(repos: RepositoryDeployments[]): Map<string, { status: 
   return map;
 }
 
-export function DashboardClient({ initialData, userRole }: DashboardClientProps) {
+export function DashboardClient({ initialData, userRole, serverNow }: DashboardClientProps) {
   const [selectedTab, setSelectedTab] = useState<EnvironmentTab>('ALL');
   const [activeFailureLog, setActiveFailureLog] = useState<{ id: string; repoName: string } | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number>(10);
   const [flashedCards, setFlashedCards] = useState<Set<string>>(new Set());
+  const [nowMs, setNowMs] = useState<number>(() => serverNow ?? Date.now());
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setNowMs(Date.now());
+  }, []);
 
   // Add Repository form state (ADMIN only)
   const [repoInput, setRepoInput] = useState('');
@@ -77,6 +85,7 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
       dedupingInterval: 3000,
       onSuccess: (newData) => {
         setSecondsLeft(10);
+        setNowMs(Date.now());
 
         if (isFirstLoadRef.current) {
           isFirstLoadRef.current = false;
@@ -167,6 +176,10 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
     return allCards.filter((card) => card.run.environment === selectedTab);
   }, [allCards, selectedTab]);
 
+  const kpis = useMemo(() => {
+    return computeKpis(repositories, nowMs, selectedTab);
+  }, [repositories, nowMs, selectedTab]);
+
   const isAdmin = userRole === 'ADMIN';
 
   const handleAddRepo = async (e: React.FormEvent) => {
@@ -236,16 +249,15 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
   return (
     <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6">
       {/* Top Header / Action Toolbar */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 pb-4 border-b border-[var(--border)]">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 pb-4 border-b border-border">
         <div>
-          <h1 className="text-xl font-medium tracking-tight text-[var(--foreground)]">
+          <h1 className="text-xl font-medium tracking-tight text-foreground">
             Pipeline Status Board
           </h1>
           <div className="mt-1 flex items-center gap-3">
             <div className="flex items-center gap-2">
               <span
-                className="w-2 h-2 shrink-0 inline-block"
-                style={{ backgroundColor: 'var(--accent)' }}
+                className="w-2 h-2 shrink-0 inline-block bg-[var(--accent)]"
                 aria-hidden="true"
               />
               <span className="section-label">
@@ -262,7 +274,7 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
               type="button"
               disabled
               aria-disabled="true"
-              className="px-3 py-1 font-mono text-[11px] uppercase tracking-[0.08em] border border-[var(--border)] bg-transparent text-[var(--foreground)] opacity-50 cursor-not-allowed rounded-[2px]"
+              className="px-3 py-1 font-mono text-[11px] uppercase tracking-[0.08em] border border-border bg-transparent text-foreground opacity-50 cursor-not-allowed rounded-[var(--radius)]"
               title="Sync stats (Coming soon)"
             >
               Sync stats
@@ -277,14 +289,41 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
         </div>
       </div>
 
+      {/* KPI Strip */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+        <div className="p-4 bg-card border border-border rounded-[var(--radius)]">
+          <span className="section-label block mb-1">Runs in last 24h (recent)</span>
+          <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
+            {kpis.runs24h}
+          </span>
+          <span className="block text-[11px] font-mono text-muted-foreground mt-1">
+            Up to 20 runs per repo
+          </span>
+        </div>
+
+        <div className="p-4 bg-card border border-border rounded-[var(--radius)]">
+          <span className="section-label block mb-1">Repos passing</span>
+          <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
+            {kpis.reposPassing}
+          </span>
+        </div>
+
+        <div className="p-4 bg-card border border-border rounded-[var(--radius)]">
+          <span className="section-label block mb-1">Running now</span>
+          <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
+            {kpis.runningNow}
+          </span>
+        </div>
+      </div>
+
       {/* Add Repository Form (ADMIN only) */}
       {isAdmin && (
-        <div className="mb-6 p-4 border border-[var(--border)] bg-[var(--card)] rounded-[var(--radius)]">
+        <div className="mb-6 p-4 border border-border bg-card rounded-[var(--radius)]">
           <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-2 mb-3">
-            <h2 className="text-xs font-mono uppercase tracking-[0.08em] font-bold text-[var(--foreground)]">
+            <h2 className="text-xs font-mono uppercase tracking-[0.08em] font-bold text-foreground">
               Add repository
             </h2>
-            <p className="text-[11px] font-mono text-[var(--muted-foreground)]">
+            <p className="text-[11px] font-mono text-muted-foreground">
               Added repositories update on refresh and need a webhook for real-time updates.
             </p>
           </div>
@@ -300,23 +339,23 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
               placeholder="owner/repo"
               disabled={isAdding}
               aria-label="Repository owner/repo"
-              className="flex-1 px-3 py-1.5 text-xs font-mono border border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] rounded-[var(--radius)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-1 focus:ring-[var(--ring)] disabled:opacity-50"
+              className="flex-1 px-3 py-1.5 text-xs font-mono border border-border bg-background text-foreground rounded-[var(--radius)] placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
             />
             <button
               type="submit"
               disabled={isAdding || !repoInput.trim()}
-              className="px-4 py-1.5 text-xs font-mono uppercase tracking-[0.08em] border border-[var(--border)] bg-[var(--primary)] text-[var(--primary-foreground)] rounded-[var(--radius)] hover:opacity-90 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed transition-opacity"
+              className="px-4 py-1.5 text-xs font-mono uppercase tracking-[0.08em] border border-border bg-primary text-primary-foreground rounded-[var(--radius)] hover:opacity-90 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed transition-opacity"
             >
               {isAdding ? 'Adding...' : 'Add repository'}
             </button>
           </form>
           {addRepoError && (
-            <p className="mt-2 text-xs font-mono text-[var(--destructive)]">
+            <p className="mt-2 text-xs font-mono text-destructive">
               {addRepoError}
             </p>
           )}
           {addRepoSuccess && (
-            <p className="mt-2 text-xs font-mono text-[var(--status-pass)]">
+            <p className="mt-2 text-xs font-mono text-status-pass">
               {addRepoSuccess}
             </p>
           )}
@@ -325,7 +364,7 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
 
       {/* Error state */}
       {error && (
-        <div className="mb-6 p-4 border border-[var(--destructive)] bg-[var(--card)] text-[var(--destructive)] rounded-[2px] flex items-center justify-between">
+        <div className="mb-6 p-4 border border-destructive bg-card text-destructive rounded-[var(--radius)] flex items-center justify-between">
           <div>
             <p className="text-xs font-mono uppercase font-bold">
               Failed to update status board
@@ -337,7 +376,7 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
           <button
             type="button"
             onClick={() => mutate()}
-            className="px-3 py-1 text-xs font-mono uppercase tracking-[0.08em] border border-[var(--border)] bg-transparent text-[var(--foreground)] hover:bg-[var(--muted)] rounded-[2px] transition-colors cursor-pointer"
+            className="px-3 py-1 text-xs font-mono uppercase tracking-[0.08em] border border-border bg-transparent text-foreground hover:bg-muted rounded-[var(--radius)] transition-colors cursor-pointer"
           >
             Retry
           </button>
@@ -359,6 +398,7 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
               repoName={card.repoName}
               repoOwner={card.repoOwner}
               run={card.run}
+              nowMs={nowMs}
               isFlashed={flashedCards.has(card.cardKey)}
               onOpenFailureLogs={(id, name) => {
                 setActiveFailureLog({ id, repoName: name });
@@ -367,11 +407,11 @@ export function DashboardClient({ initialData, userRole }: DashboardClientProps)
           ))}
         </div>
       ) : (
-        <div className="py-16 text-center border border-dashed border-[var(--border)] rounded-[2px] bg-[var(--card)]">
-          <h3 className="text-sm font-medium text-[var(--foreground)]">
+        <div className="py-16 text-center border border-dashed border-border rounded-[var(--radius)] bg-card">
+          <h3 className="text-sm font-medium text-foreground">
             No pipeline runs found
           </h3>
-          <p className="mt-1 text-xs text-[var(--muted-foreground)] max-w-sm mx-auto">
+          <p className="mt-1 text-xs text-muted-foreground max-w-sm mx-auto">
             {selectedTab === 'ALL'
               ? 'No GitHub workflow runs have been recorded yet.'
               : `No runs recorded for the ${selectedTab.toLowerCase()} environment.`}

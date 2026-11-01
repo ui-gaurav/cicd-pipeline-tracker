@@ -6,7 +6,7 @@ import useSWR from 'swr';
 import StatusBadge from './StatusBadge';
 import RelativeTime from './RelativeTime';
 import FailureLogPanel from './FailureLogPanel';
-import { isFailingStatus } from '@/lib/status';
+import { normalizeStatus } from '@/lib/status';
 import type { RepoDetailData } from '@/lib/repo-stats';
 
 interface RepoDetailClientProps {
@@ -100,19 +100,19 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
       <div className="mb-6">
         <Link
           href="/dashboard"
-          className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--ring)]"
+          className="inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground hover:text-foreground transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-[var(--radius)]"
         >
           ← Back to dashboard
         </Link>
       </div>
 
       {/* Header with Title and Sync stats button */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 pb-4 border-b border-[var(--border)]">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 pb-4 border-b border-border">
         <div>
-          <span className="section-label">
+          <span className="block text-[11px] text-muted-foreground mb-0.5">
             {toSentenceCase(repo.repository.owner)} /
           </span>
-          <h1 className="text-2xl font-medium tracking-tight text-[var(--foreground)] mt-0.5">
+          <h1 className="text-2xl font-medium tracking-tight text-foreground">
             {toSentenceCase(repo.repository.name)}
           </h1>
         </div>
@@ -124,7 +124,7 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
               type="button"
               onClick={handleSync}
               disabled={isSyncing}
-              className="px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.08em] border border-[var(--border)] bg-[var(--primary)] text-[var(--primary-foreground)] rounded-[2px] hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity cursor-pointer focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--ring)] focus-visible:outline-offset-2"
+              className="px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.08em] border border-border bg-primary text-primary-foreground rounded-[var(--radius)] hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             >
               {isSyncing ? 'Syncing...' : 'Sync stats'}
             </button>
@@ -134,7 +134,7 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
 
       {/* Sync Error State */}
       {syncError && (
-        <div className="mb-6 p-4 border border-[var(--destructive)] bg-[var(--card)] text-[var(--destructive)] rounded-[2px] flex items-center justify-between">
+        <div className="mb-6 p-4 border border-destructive bg-card text-destructive rounded-[var(--radius)] flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="font-mono text-xs font-bold uppercase">Sync error:</span>
             <span className="font-mono text-xs">{syncError}</span>
@@ -142,7 +142,7 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
           <button
             type="button"
             onClick={() => setSyncError(null)}
-            className="text-xs font-mono uppercase underline text-[var(--destructive)] cursor-pointer"
+            className="text-xs font-mono uppercase underline text-destructive cursor-pointer"
           >
             Dismiss
           </button>
@@ -161,42 +161,30 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
 
           {/* Counts and Success Rate */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-            <div
-              className="p-3 border border-[var(--border)] rounded-[2px]"
-              style={{ backgroundColor: 'var(--card)' }}
-            >
+            <div className="p-3 border border-border bg-card rounded-[var(--radius)]">
               <span className="section-label block mb-1">Total runs</span>
-              <span className="text-xl font-mono font-medium text-[var(--foreground)]">
+              <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
                 {repo.totalRuns}
               </span>
             </div>
 
-            <div
-              className="p-3 border border-[var(--border)] rounded-[2px]"
-              style={{ backgroundColor: 'var(--card)' }}
-            >
+            <div className="p-3 border border-border border-t-2 border-t-status-pass bg-card rounded-[var(--radius)]">
               <span className="section-label block mb-1">Passed</span>
-              <span className="text-xl font-mono font-medium text-[var(--foreground)]">
+              <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
                 {repo.passed}
               </span>
             </div>
 
-            <div
-              className="p-3 border border-[var(--border)] rounded-[2px]"
-              style={{ backgroundColor: 'var(--card)' }}
-            >
+            <div className="p-3 border border-border border-t-2 border-t-status-fail bg-card rounded-[var(--radius)]">
               <span className="section-label block mb-1">Failed</span>
-              <span className="text-xl font-mono font-medium text-[var(--foreground)]">
+              <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
                 {repo.failed}
               </span>
             </div>
 
-            <div
-              className="p-3 border border-[var(--border)] rounded-[2px]"
-              style={{ backgroundColor: 'var(--card)' }}
-            >
+            <div className="p-3 border border-border bg-card rounded-[var(--radius)]">
               <span className="section-label block mb-1">Success rate</span>
-              <span className="text-xl font-mono font-medium text-[var(--foreground)]">
+              <span className="font-mono text-2xl font-semibold tabular-nums text-foreground">
                 {repo.successRate}%
               </span>
             </div>
@@ -206,27 +194,24 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
           <div>
             <h3 className="section-label mb-2">Recent runs (last 10)</h3>
             {repo.recentRuns.length > 0 ? (
-              <div
-                className="border border-[var(--border)] rounded-[2px] overflow-hidden"
-                style={{ backgroundColor: 'var(--card)' }}
-              >
-                <div className="divide-y divide-[var(--border)]">
+              <div className="border border-border rounded-[var(--radius)] overflow-hidden bg-card">
+                <div className="divide-y divide-border">
                   {repo.recentRuns.map((run) => {
-                    const failing = isFailingStatus(run.status);
+                    const failing = normalizeStatus(run.status) === 'fail';
                     return (
                       <div
                         key={run.id}
                         className={`p-3 flex items-center justify-between gap-3 text-xs ${
-                          failing ? 'border-l-[3px] border-l-[var(--status-fail)]' : ''
+                          failing ? 'border-l-[3px] border-l-status-fail' : ''
                         }`}
                       >
                         <div className="flex items-center gap-3 min-w-0">
                           <StatusBadge status={run.status} />
-                          <span className="font-mono text-[11px] text-[var(--foreground)]">
+                          <span className="font-mono text-[11px] px-1.5 py-0.5 bg-muted text-foreground rounded-[var(--radius)]">
                             {run.sha.slice(0, 7)}
                           </span>
                           <span
-                            className="text-[var(--muted-foreground)] truncate max-w-[120px]"
+                            className="text-muted-foreground truncate max-w-[120px]"
                             title={run.author}
                           >
                             {toSentenceCase(run.author)}
@@ -237,7 +222,7 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
                           <span className="section-label">{run.environment}</span>
                           <RelativeTime
                             date={run.timestamp}
-                            className="text-[var(--muted-foreground)] text-xs"
+                            className="text-muted-foreground text-xs"
                           />
                           {failing && (
                             <button
@@ -246,9 +231,9 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
                                 setActiveFailureLog({
                                   id: run.id,
                                   repoName: repo.repository.name,
-                                })
+                                  })
                               }
-                              className="underline text-[11px] text-[var(--foreground)] hover:text-[var(--muted-foreground)] cursor-pointer"
+                              className="underline text-[11px] text-foreground hover:text-muted-foreground cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-[var(--radius)]"
                             >
                               View log
                             </button>
@@ -260,11 +245,8 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
                 </div>
               </div>
             ) : (
-              <div
-                className="p-8 text-center border border-dashed border-[var(--border)] rounded-[2px]"
-                style={{ backgroundColor: 'var(--card)' }}
-              >
-                <p className="text-xs font-mono uppercase text-[var(--muted-foreground)]">
+              <div className="p-8 text-center border border-dashed border-border rounded-[var(--radius)] bg-card">
+                <p className="text-xs font-mono uppercase text-muted-foreground">
                   No pipeline runs recorded for this repository.
                 </p>
               </div>
@@ -283,86 +265,68 @@ export function RepoDetailClient({ initialData, userRole }: RepoDetailClientProp
           {repo.stats ? (
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
-                <div
-                  className="p-3 border border-[var(--border)] rounded-[2px]"
-                  style={{ backgroundColor: 'var(--card)' }}
-                >
+                <div className="p-3 border border-border rounded-[var(--radius)] bg-card">
                   <span className="section-label block mb-1">Total commits</span>
-                  <span className="text-xl font-mono font-medium text-[var(--foreground)]">
+                  <span className="font-mono text-xl font-medium text-foreground">
                     {repo.stats.totalCommits.toLocaleString()}
                   </span>
                 </div>
 
-                <div
-                  className="p-3 border border-[var(--border)] rounded-[2px]"
-                  style={{ backgroundColor: 'var(--card)' }}
-                >
+                <div className="p-3 border border-border rounded-[var(--radius)] bg-card">
                   <span className="section-label block mb-1">Contributors</span>
-                  <span className="text-xl font-mono font-medium text-[var(--foreground)]">
+                  <span className="font-mono text-xl font-medium text-foreground">
                     {repo.stats.contributors.toLocaleString()}
                   </span>
                 </div>
 
-                <div
-                  className="p-3 border border-[var(--border)] rounded-[2px]"
-                  style={{ backgroundColor: 'var(--card)' }}
-                >
+                <div className="p-3 border border-border rounded-[var(--radius)] bg-card">
                   <span className="section-label block mb-1">Stars</span>
-                  <span className="text-xl font-mono font-medium text-[var(--foreground)]">
+                  <span className="font-mono text-xl font-medium text-foreground">
                     {repo.stats.stars.toLocaleString()}
                   </span>
                 </div>
 
-                <div
-                  className="p-3 border border-[var(--border)] rounded-[2px]"
-                  style={{ backgroundColor: 'var(--card)' }}
-                >
+                <div className="p-3 border border-border rounded-[var(--radius)] bg-card">
                   <span className="section-label block mb-1">Open issues</span>
-                  <span className="text-xl font-mono font-medium text-[var(--foreground)]">
+                  <span className="font-mono text-xl font-medium text-foreground">
                     {repo.stats.openIssues.toLocaleString()}
                   </span>
                 </div>
               </div>
 
               {/* Language & Last Synced footer */}
-              <div
-                className="p-3 border border-[var(--border)] rounded-[2px] flex items-center justify-between text-xs font-mono"
-                style={{ backgroundColor: 'var(--card)' }}
-              >
+              <div className="p-3 border border-border rounded-[var(--radius)] flex items-center justify-between text-xs font-mono bg-card">
                 <div>
-                  <span className="text-[var(--muted-foreground)]">Language: </span>
-                  <span className="text-[var(--foreground)]">
+                  <span className="text-muted-foreground">Language: </span>
+                  <span className="text-foreground">
                     {repo.stats.primaryLanguage || 'Not specified'}
                   </span>
                 </div>
 
                 <div>
-                  <span className="text-[var(--muted-foreground)]">Last synced: </span>
+                  <span className="text-muted-foreground">Last synced: </span>
                   {repo.stats.lastSyncedAt ? (
                     <RelativeTime
                       date={repo.stats.lastSyncedAt}
-                      className="text-[var(--foreground)]"
+                      className="text-foreground"
                     />
                   ) : (
-                    <span className="text-[var(--muted-foreground)]">Never</span>
+                    <span className="text-muted-foreground">Never</span>
                   )}
                 </div>
               </div>
             </div>
           ) : (
-            <div
-              className="p-8 text-center border border-dashed border-[var(--border)] rounded-[2px]"
-              style={{ backgroundColor: 'var(--card)' }}
-            >
-              <p className="text-xs font-mono uppercase text-[var(--muted-foreground)] mb-2">
+            <div className="p-8 text-center border border-dashed border-border rounded-[var(--radius)] bg-card">
+              <p className="text-xs font-mono uppercase text-muted-foreground mb-2">
                 No repository stats synced yet.
               </p>
               {isAdmin ? (
-                <p className="text-xs text-[var(--muted-foreground)]">
+                <p className="text-xs text-muted-foreground">
                   Click the &quot;Sync stats&quot; button above to fetch commits, contributors, stars, and open issues from GitHub.
                 </p>
               ) : (
-                <p className="text-xs text-[var(--muted-foreground)]">
+                <p className="text-xs text-muted-foreground">
                   An administrator has not synced stats from GitHub for this repository yet.
                 </p>
               )}
