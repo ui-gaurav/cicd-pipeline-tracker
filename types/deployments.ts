@@ -16,6 +16,7 @@ export interface RepositoryDeployments {
   id: string;
   name: string;
   owner: string;
+  createdAt?: string;
   latestByEnvironment: {
     STAGING: DeploymentItem | null;
     PRODUCTION: DeploymentItem | null;
